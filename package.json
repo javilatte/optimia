@@ -1,0 +1,30 @@
+{
+  "name": "@javilatte/optimia",
+  "version": "0.1.0",
+  "description": "AI tool orchestrator — launches claude/opencode/gemini with codegraph and headroom per repository",
+  "license": "MIT",
+  "author": "Javier <ai@jagoan.es>",
+  "homepage": "https://github.com/jagoan/optimia",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jagoan/optimia.git"
+  },
+  "keywords": [
+    "ai",
+    "claude",
+    "opencode",
+    "codegraph",
+    "headroom",
+    "cli",
+    "developer-tools"
+  ],
+  "bin": {
+    "optimia": "bin/optimia"
+  },
+  "files": [
+    "bin/optimia"
+  ],
+  "engines": {
+    "node": ">=14"
+  }
+}

@@ -1,0 +1,3 @@
+*.tgz
+optimia_*_all/
+node_modules/

@@ -1,0 +1,680 @@
+#!/usr/bin/env bash
+# optimIA — AI Tool Orchestrator
+# Detects the current repo, configures codegraph + headroom, and launches the
+# right AI CLI. Config lives in ~/.config/optimia/.
+
+set -euo pipefail
+
+OPTIMIA_VERSION="0.1.0"
+OPTIMIA_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/optimia"
+OPTIMIA_REPOS_DIR="$OPTIMIA_CONFIG_DIR/repos"
+OPTIMIA_TOOLS_FILE="$OPTIMIA_CONFIG_DIR/tools.conf"
+OPTIMIA_AGENTS_FILE="$OPTIMIA_CONFIG_DIR/AGENTS.md"
+OPTIMIA_GLOBAL_FILE="$OPTIMIA_CONFIG_DIR/config.conf"
+
+# ── Colors ─────────────────────────────────────────────────────────────────────
+if [[ -t 1 ]]; then
+    RED=$'\033[0;31m' GREEN=$'\033[0;32m' YELLOW=$'\033[1;33m'
+    CYAN=$'\033[0;36m' BOLD=$'\033[1m' DIM=$'\033[2m' NC=$'\033[0m'
+else
+    RED='' GREEN='' YELLOW='' CYAN='' BOLD='' DIM='' NC=''
+fi
+
+print_banner() {
+    local O='' C='' R='' D=''
+    if [[ -t 1 ]]; then
+        O=$'\033[38;5;208m'
+        C=$'\033[1;36m'
+        R=$'\033[0m'
+        D=$'\033[2m'
+    fi
+    printf '\n'
+    printf '  %s ██  ███  ████ ███ █   █ %s███  ██ %s\n'  "$O" "$C" "$R"
+    printf '  %s█  █ █  █  █    █  ██ ██ %s █  █  █%s\n' "$O" "$C" "$R"
+    printf '  %s█  █ ███   █    █  █ █ █ %s █  ████%s\n' "$O" "$C" "$R"
+    printf '  %s█  █ █     █    █  █   █ %s █  █  █%s\n' "$O" "$C" "$R"
+    printf '  %s ██  █     █   ███ █   █ %s███ █  █%s\n'  "$O" "$C" "$R"
+    printf '\n'
+    printf '  %sAI tool orchestrator  v%s%s\n\n' "$D" "$OPTIMIA_VERSION" "$R"
+}
+
+log()      { echo -e "${CYAN}→${NC} $*"; }
+log_ok()   { echo -e "${GREEN}✓${NC} $*"; }
+log_warn() { echo -e "${YELLOW}⚠${NC} $*"; }
+log_err()  { echo -e "${RED}✗${NC} $*" >&2; }
+
+# ── Key-value helpers (flat file: key=value) ───────────────────────────────────
+# Both functions use awk for exact string matching — no regex or sed delimiter
+# injection possible regardless of key/value content.
+
+kv_get() {
+    local file="$1" key="$2" default="${3:-}"
+    _KVKEY="$key" _KVDEF="$default" \
+    awk '
+        BEGIN { k=ENVIRON["_KVKEY"]; def=ENVIRON["_KVDEF"] }
+        /^[[:space:]]*#|^[[:space:]]*$/ { next }
+        {
+            eq = index($0, "=")
+            if (eq > 0) {
+                kk = substr($0, 1, eq-1); gsub(/[[:space:]]/, "", kk)
+                if (kk == k) {
+                    vv = substr($0, eq+1)
+                    gsub(/^[[:space:]]+|[[:space:]]+$/, "", vv)
+                    print vv; found=1; exit
+                }
+            }
+        }
+        END { if (!found) print def }
+    ' "$file" 2>/dev/null
+}
+
+kv_set() {
+    local file="$1" key="$2" value="$3"
+    mkdir -p "$(dirname "$file")"
+    touch "$file"
+    # Use ENVIRON to avoid awk -v escape processing on user-controlled values.
+    # found flag pattern: END always runs after explicit exit, so set a flag
+    # and let END determine the exit code rather than calling exit 0 in a rule.
+    if _KVKEY="$key" awk '
+        BEGIN { k=ENVIRON["_KVKEY"] }
+        { eq=index($0,"="); if(eq>0){ kk=substr($0,1,eq-1); gsub(/[[:space:]]/,"",kk); if(kk==k){ found=1; exit } } }
+        END { exit !found }
+    ' "$file" 2>/dev/null; then
+        local tmp
+        tmp=$(_KVKEY="$key" _KVVAL="$value" awk '
+            BEGIN { k=ENVIRON["_KVKEY"]; v=ENVIRON["_KVVAL"] }
+            {
+                eq = index($0, "=")
+                if (eq > 0) {
+                    kk = substr($0, 1, eq-1); gsub(/[[:space:]]/, "", kk)
+                    if (kk == k) { print k "=" v; next }
+                }
+                print
+            }
+        ' "$file")
+        printf '%s\n' "$tmp" > "$file"
+    else
+        printf '%s=%s\n' "$key" "$value" >> "$file"
+    fi
+}
+
+# ── INI helpers (sectioned file: [section] / key=value) ───────────────────────
+ini_get() {
+    local file="$1" section="$2" key="$3" default="${4:-}"
+    # Use ENVIRON instead of -v to avoid awk escape-sequence processing on
+    # user-controlled section/key values (backslashes in -v are expanded).
+    _INISEC="$section" _INIKEY="$key" _INIDEF="$default" \
+    awk '
+        BEGIN { sec=ENVIRON["_INISEC"]; k=ENVIRON["_INIKEY"]; def=ENVIRON["_INIDEF"] }
+        /^\[/ {
+            cur = $0; gsub(/[\[\] \t]/, "", cur); next
+        }
+        /^[[:space:]]*#|^[[:space:]]*$/ { next }
+        cur == sec {
+            eq = index($0, "=")
+            if (eq > 0) {
+                kk = substr($0, 1, eq-1); gsub(/[[:space:]]/, "", kk)
+                if (kk == k) {
+                    vv = substr($0, eq+1); gsub(/^[[:space:]]+|[[:space:]]+$/, "", vv)
+                    print vv; found=1; exit
+                }
+            }
+        }
+        END { if (!found) print def }
+    ' "$file"
+}
+
+ini_sections() {
+    LC_ALL=C grep -E '^\[.+\]' "$1" | tr -d '[]'
+}
+
+# ── User interaction ───────────────────────────────────────────────────────────
+ask_yn() {
+    local prompt="$1" default="${2:-y}"
+    local yn ind
+    [[ "$default" == "y" ]] && ind="[Y/n]" || ind="[y/N]"
+    read -r -p "$(echo -e "  ${BOLD}${prompt}${NC} ${DIM}${ind}${NC} ")" yn
+    yn="${yn:-$default}"
+    [[ "$yn" =~ ^[Yy] ]]
+}
+
+ask_choice() {
+    local prompt="$1"; shift
+    local options=("$@")
+    echo -e "  ${BOLD}${prompt}${NC}" >&2
+    for i in "${!options[@]}"; do
+        printf '    %d. %s\n' "$((i+1))" "${options[$i]}" >&2
+    done
+    local choice
+    while true; do
+        read -r -p "  Choice [1-${#options[@]}]: " choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] \
+           && (( choice >= 1 && choice <= ${#options[@]} )); then
+            echo "${options[$((choice-1))]}"; return
+        fi
+        echo "  Invalid. Try again." >&2
+    done
+}
+
+# ── Repository detection ───────────────────────────────────────────────────────
+is_git_repo() { git rev-parse --git-dir >/dev/null 2>&1; }
+
+repo_id() {
+    local seed
+    seed=$(git remote get-url origin 2>/dev/null || true)
+    [[ -z "$seed" ]] && seed="$(pwd)"
+    printf '%s' "$seed" | md5sum | cut -d' ' -f1
+}
+
+repo_label() {
+    if is_git_repo; then
+        local remote
+        remote=$(git remote get-url origin 2>/dev/null || true)
+        [[ -n "$remote" ]] && { basename "$remote" .git; return; }
+    fi
+    basename "$(pwd)"
+}
+
+repo_conf_file() { echo "$OPTIMIA_REPOS_DIR/$(repo_id).conf"; }
+is_known_repo()  { [[ -f "$(repo_conf_file)" ]]; }
+
+# ── Default config files ───────────────────────────────────────────────────────
+write_default_global() {
+    cat > "$OPTIMIA_GLOBAL_FILE" <<'EOF'
+# optimIA — Global configuration
+# Edit this file or run: optimia config edit
+
+default_ai=claude
+use_headroom=true
+headroom_flags=
+ask_codegraph_update=true
+EOF
+}
+
+write_default_tools() {
+    cat > "$OPTIMIA_TOOLS_FILE" <<'EOF'
+# optimIA — Tools configuration
+# Each [section] defines one tool.
+# Run: optimia tools list   — see current tools
+# Run: optimia tools edit   — open this file in $EDITOR
+#
+# Fields:
+#   command      executable (or "npx pkg")
+#   description  shown in menus
+#   order        sort order (lower = earlier)
+#   enabled      true | false
+#   ai_tool      true if this is a launchable AI CLI
+#   wrapper      headroom | (blank)
+#   launch_args  extra flags appended at launch
+
+[codegraph]
+command=npx @colbymchenry/codegraph
+description=Code intelligence knowledge graph
+order=1
+enabled=true
+ai_tool=false
+
+[headroom]
+command=headroom
+description=Token-efficient AI wrapper (60-90% savings)
+order=2
+enabled=true
+ai_tool=false
+
+[claude]
+command=claude
+description=Claude Code CLI by Anthropic
+order=3
+enabled=true
+ai_tool=true
+wrapper=headroom
+launch_args=
+
+[opencode]
+command=opencode
+description=OpenCode AI CLI
+order=4
+enabled=true
+ai_tool=true
+wrapper=headroom
+launch_args=
+
+[gemini]
+command=gemini
+description=Gemini CLI
+order=5
+enabled=false
+ai_tool=true
+wrapper=headroom
+launch_args=
+EOF
+}
+
+write_default_agents() {
+    cat > "$OPTIMIA_AGENTS_FILE" <<'AGENTS'
+# optimIA — Agent Instructions
+
+This file documents the orchestration flow and available tools for AI agents
+working in repositories managed by optimIA. Edit it to customise agent behaviour.
+
+## What is optimIA?
+
+A launcher that:
+1. Identifies the current repository (git remote URL or directory hash)
+2. Loads per-repo preferences from `~/.config/optimia/repos/<hash>.conf`
+3. Optionally syncs the CodeGraph code-intelligence index
+4. Launches the configured AI CLI wrapped in headroom for token savings
+
+## Launch flow
+
+```
+$ optimia
+  │
+  ├─ 1. Detect repo (git remote → hash, or pwd → hash)
+  │
+  ├─ 2. First time? → wizard
+  │     Select AI tool (claude / opencode / ask each time)
+  │     Enable CodeGraph? (y/n)
+  │
+  ├─ 3. CodeGraph (order=1) — if enabled
+  │     Not initialised → ask to run: npx @colbymchenry/codegraph init -i
+  │     Initialised      → ask to run: npx @colbymchenry/codegraph sync
+  │
+  ├─ 4. AI tool selection (order=3+)
+  │     From repo config, global default, or interactive ask
+  │
+  └─ 5. Launch
+        headroom wrap <headroom_flags> <ai_command> <launch_args>
+        (or direct launch if headroom is disabled or not installed)
+```
+
+## Available tools
+
+### CodeGraph  (order=1)
+**Purpose**: Parses the codebase into a SQLite knowledge graph
+**Binary**: `npx @colbymchenry/codegraph`
+
+| Subcommand | When to use |
+|---|---|
+| `init -i` | First time in a project |
+| `sync` | After making code changes |
+| `status` | Check index health |
+| `context "<task>"` | Best first call — focused context for a task |
+| `query "<symbol>"` | Find a symbol by name |
+| `files` | List indexed project structure |
+| `serve` | Start as MCP server for AI assistants |
+
+> **Tip**: `codegraph context "<describe your task>"` is the fastest way to get
+> oriented in an unfamiliar codebase. Use it before exploring with grep/read.
+
+### Headroom  (order=2)
+**Purpose**: Token-optimised proxy — filters redundant output before it reaches
+the AI context window.
+**Command**: `headroom wrap [flags] <ai-command>`
+**Flags** (configured via `headroom_flags` in config.conf):
+- `--memory` — enable persistent memory across sessions
+
+### Claude Code  (order=3)
+**Command**: `claude`
+**Launched as**: `headroom wrap --memory claude`
+**Best for**: Coding tasks, refactoring, debugging, code review
+
+### OpenCode  (order=4)
+**Command**: `opencode`
+**Launched as**: `headroom wrap opencode`
+**Best for**: Alternative to Claude; multi-provider support
+
+### Gemini CLI  (order=5, disabled by default)
+**Command**: `gemini`
+**Enable**: set `enabled=true` in `~/.config/optimia/tools.conf`
+
+---
+
+## Configuration files
+
+| File | Purpose |
+|---|---|
+| `~/.config/optimia/config.conf` | Global defaults (default_ai, headroom_flags…) |
+| `~/.config/optimia/tools.conf` | Tool definitions — edit to add/remove/reorder |
+| `~/.config/optimia/repos/<hash>.conf` | Per-repo overrides |
+| `~/.config/optimia/AGENTS.md` | This file |
+
+### Global config keys
+
+```ini
+default_ai=claude          # Fallback AI tool if repo has none set
+use_headroom=true          # Wrap AI with headroom by default
+headroom_flags=--memory    # Flags passed to `headroom wrap`
+ask_codegraph_update=true  # Prompt to sync codegraph on each launch
+```
+
+### Per-repo config keys
+
+```ini
+ai_tool=claude             # AI tool for this repo (claude|opencode|…|ask)
+use_codegraph=true         # Whether CodeGraph is enabled
+codegraph_initialized=true # Has `codegraph init` been run here
+use_headroom=true          # Override global headroom setting
+```
+
+---
+
+## Adding a new tool
+
+1. Open `~/.config/optimia/tools.conf` (`optimia tools edit`)
+2. Add a section at the desired order:
+
+```ini
+[mytool]
+command=mytool
+description=My custom AI assistant
+order=6
+enabled=true
+ai_tool=true
+wrapper=headroom
+launch_args=--my-flag
+```
+
+3. Update this AGENTS.md with the new tool's documentation.
+
+---
+
+## Notes for AI agents
+
+- Always call `codegraph context "<task>"` at the start of a session — it's faster
+  than a grep/read exploration loop and uses a pre-built AST-parsed index.
+- Token savings from headroom accumulate per session. Check them with `rtk gain`.
+- If codegraph returns stale results (deleted symbols), run `codegraph sync`.
+- The `--memory` flag keeps Claude Code's memory active across sessions — don't
+  disable it unless you want a stateless session.
+AGENTS
+}
+
+# ── Initialise config dir ──────────────────────────────────────────────────────
+ensure_config() {
+    mkdir -p "$OPTIMIA_CONFIG_DIR" "$OPTIMIA_REPOS_DIR"
+    # 700/600: config not readable by other local users (always enforce)
+    chmod 700 "$OPTIMIA_CONFIG_DIR" "$OPTIMIA_REPOS_DIR"
+    [[ -f "$OPTIMIA_GLOBAL_FILE" ]] || write_default_global
+    [[ -f "$OPTIMIA_TOOLS_FILE"  ]] || write_default_tools
+    [[ -f "$OPTIMIA_AGENTS_FILE" ]] || write_default_agents
+    chmod 600 "$OPTIMIA_GLOBAL_FILE" "$OPTIMIA_TOOLS_FILE" "$OPTIMIA_AGENTS_FILE"
+}
+
+# ── List enabled AI tools sorted by order ─────────────────────────────────────
+list_ai_tools() {
+    local -a pairs=() secs=()
+    mapfile -t secs < <(ini_sections "$OPTIMIA_TOOLS_FILE")
+    local sec
+    for sec in "${secs[@]}"; do
+        local enabled ai order
+        enabled=$(ini_get "$OPTIMIA_TOOLS_FILE" "$sec" "enabled" "false")
+        ai=$(ini_get      "$OPTIMIA_TOOLS_FILE" "$sec" "ai_tool" "false")
+        order=$(ini_get   "$OPTIMIA_TOOLS_FILE" "$sec" "order"   "99")
+        [[ "$enabled" == "true" && "$ai" == "true" ]] && pairs+=("${order}:${sec}")
+    done
+    printf '%s\n' "${pairs[@]}" | sort -t: -k1,1n | cut -d: -f2
+}
+
+# ── CodeGraph handling ─────────────────────────────────────────────────────────
+handle_codegraph() {
+    local repo_conf="$1"
+
+    # Determine whether codegraph is wanted for this repo
+    local use_cg
+    use_cg=$(kv_get "$repo_conf" "use_codegraph" "")
+    if [[ -z "$use_cg" ]]; then
+        echo ""
+        if ask_yn "Enable ${CYAN}CodeGraph${NC} for this repo? (code-intelligence graph)"; then
+            kv_set "$repo_conf" "use_codegraph" "true"
+            use_cg="true"
+        else
+            kv_set "$repo_conf" "use_codegraph" "false"
+            use_cg="false"
+        fi
+    fi
+    [[ "$use_cg" != "true" ]] && return 0
+
+    # Build the codegraph base command as an array (handles "npx pkg" correctly)
+    local cg_str
+    cg_str=$(ini_get "$OPTIMIA_TOOLS_FILE" "codegraph" "command" "npx @colbymchenry/codegraph")
+    local -a cg=()
+    read -ra cg <<< "$cg_str"
+
+    local initialized
+    initialized=$(kv_get "$repo_conf" "codegraph_initialized" "false")
+
+    if [[ "$initialized" != "true" ]]; then
+        log "CodeGraph not yet initialised for this repo."
+        if ask_yn "Initialise now? (builds code index — may take a moment)"; then
+            log "Building code index…"
+            "${cg[@]}" init -i
+            kv_set "$repo_conf" "codegraph_initialized" "true"
+            log_ok "CodeGraph initialised."
+        fi
+    else
+        local ask_sync
+        ask_sync=$(kv_get "$OPTIMIA_GLOBAL_FILE" "ask_codegraph_update" "true")
+        if [[ "$ask_sync" == "true" ]]; then
+            if ask_yn "Sync CodeGraph? (update index with recent changes)" "n"; then
+                log "Syncing code index…"
+                "${cg[@]}" sync
+                log_ok "CodeGraph synced."
+            fi
+        fi
+    fi
+}
+
+# ── Launch ─────────────────────────────────────────────────────────────────────
+launch_ai_tool() {
+    local tool="$1" repo_conf="$2"
+
+    local ai_cmd wrapper launch_args use_headroom headroom_flags
+    ai_cmd=$(ini_get      "$OPTIMIA_TOOLS_FILE" "$tool" "command"     "$tool")
+    wrapper=$(ini_get     "$OPTIMIA_TOOLS_FILE" "$tool" "wrapper"     "")
+    launch_args=$(ini_get "$OPTIMIA_TOOLS_FILE" "$tool" "launch_args" "")
+    use_headroom=$(kv_get "$repo_conf" "use_headroom" \
+                  "$(kv_get "$OPTIMIA_GLOBAL_FILE" "use_headroom" "true")")
+    headroom_flags=$(kv_get "$OPTIMIA_GLOBAL_FILE" "headroom_flags" "--memory")
+
+    if ! command -v "$ai_cmd" &>/dev/null; then
+        log_err "Command '${ai_cmd}' not found in PATH — is ${tool} installed?"
+        exit 1
+    fi
+
+    echo ""
+    log_ok "Launching ${BOLD}${tool}${NC}…"
+    echo ""
+
+    local -a cmd=()
+    if [[ "$use_headroom" == "true" && "$wrapper" == "headroom" ]]; then
+        if ! command -v headroom &>/dev/null; then
+            log_warn "headroom not found — launching ${tool} directly."
+            cmd=("$ai_cmd")
+        elif ! headroom wrap --help 2>&1 | grep -qw "$ai_cmd"; then
+            log_warn "headroom does not support '${ai_cmd}' — launching directly."
+            cmd=("$ai_cmd")
+        else
+            read -ra hf <<< "$headroom_flags"
+            if [[ ${#hf[@]} -gt 0 && -n "${hf[0]}" ]]; then
+                cmd=(headroom wrap "${hf[@]}" "$ai_cmd")
+            else
+                cmd=(headroom wrap "$ai_cmd")
+            fi
+        fi
+    else
+        cmd=("$ai_cmd")
+    fi
+
+    [[ -n "$launch_args" ]] && read -ra extra <<< "$launch_args" && cmd+=("${extra[@]}")
+
+    exec "${cmd[@]}"
+}
+
+# ── First-time repo wizard ─────────────────────────────────────────────────────
+configure_new_repo() {
+    local repo_conf="$1"
+    echo ""
+    echo -e "  ${BOLD}${CYAN}── New repo: $(repo_label) ──${NC}"
+    echo ""
+
+    local -a ai_tools=()
+    mapfile -t ai_tools < <(list_ai_tools)
+    ai_tools+=("ask each time")
+
+    local chosen
+    if (( ${#ai_tools[@]} == 1 )); then
+        chosen="${ai_tools[0]}"
+        log "Only available tool: ${BOLD}${chosen}${NC}"
+    else
+        chosen=$(ask_choice "Which AI tool for this repo?" "${ai_tools[@]}")
+    fi
+
+    [[ "$chosen" == "ask each time" ]] && chosen="ask"
+    kv_set "$repo_conf" "ai_tool" "$chosen"
+    kv_set "$repo_conf" "use_headroom" \
+           "$(kv_get "$OPTIMIA_GLOBAL_FILE" "use_headroom" "true")"
+
+    log_ok "Repo configured → ${repo_conf}"
+}
+
+# ── Subcommands ────────────────────────────────────────────────────────────────
+cmd_config() {
+    case "${1:-show}" in
+        show) cat "$OPTIMIA_GLOBAL_FILE" ;;
+        edit) "${EDITOR:-${VISUAL:-nano}}" "$OPTIMIA_GLOBAL_FILE" ;;
+        *)    echo "Usage: optimia config [show|edit]" ;;
+    esac
+}
+
+cmd_repos() {
+    case "${1:-list}" in
+        list)
+            local -a files=("$OPTIMIA_REPOS_DIR"/*.conf)
+            if [[ ! -f "${files[0]:-}" ]]; then
+                log "No known repositories yet."; return
+            fi
+            echo -e "${BOLD}Known repositories:${NC}"
+            for f in "${files[@]}"; do
+                [[ -f "$f" ]] || continue
+                local ai use_cg
+                ai=$(kv_get "$f" "ai_tool" "?")
+                use_cg=$(kv_get "$f" "use_codegraph" "?")
+                echo "  $(basename "$f" .conf)  ai=$ai  codegraph=$use_cg"
+            done
+            ;;
+        show)
+            local conf; conf=$(repo_conf_file)
+            [[ -f "$conf" ]] && { echo -e "${BOLD}$(repo_label):${NC}"; cat "$conf"; } \
+                             || log_warn "Current repo not configured yet."
+            ;;
+        forget)
+            local conf; conf=$(repo_conf_file)
+            if [[ -f "$conf" ]]; then
+                rm "$conf"; log_ok "Repo forgotten. Next run will reconfigure."
+            else
+                log_warn "Current repo not in known repos."
+            fi
+            ;;
+        *) echo "Usage: optimia repos [list|show|forget]" ;;
+    esac
+}
+
+cmd_tools() {
+    case "${1:-list}" in
+        list)
+            echo -e "${BOLD}Configured tools:${NC}"
+            local -a secs=()
+            mapfile -t secs < <(ini_sections "$OPTIMIA_TOOLS_FILE")
+            local sec
+            for sec in "${secs[@]}"; do
+                local enabled desc order ai_tool status tag
+                enabled=$(ini_get "$OPTIMIA_TOOLS_FILE" "$sec" "enabled"     "false")
+                desc=$(ini_get    "$OPTIMIA_TOOLS_FILE" "$sec" "description" "")
+                order=$(ini_get   "$OPTIMIA_TOOLS_FILE" "$sec" "order"       "?")
+                ai_tool=$(ini_get "$OPTIMIA_TOOLS_FILE" "$sec" "ai_tool"     "false")
+                [[ "$enabled" == "true" ]] \
+                    && status="${GREEN}✓${NC}" || status="${RED}✗${NC}"
+                [[ "$ai_tool" == "true" ]] \
+                    && tag=" ${CYAN}[AI]${NC}" || tag=""
+                echo -e "  [${order}] ${status} ${BOLD}${sec}${NC}${tag} — ${desc}"
+            done
+            ;;
+        edit) "${EDITOR:-${VISUAL:-nano}}" "$OPTIMIA_TOOLS_FILE" ;;
+        *) echo "Usage: optimia tools [list|edit]" ;;
+    esac
+}
+
+cmd_agents() {
+    "${EDITOR:-${VISUAL:-nano}}" "$OPTIMIA_AGENTS_FILE"
+}
+
+# ── Help ───────────────────────────────────────────────────────────────────────
+show_help() {
+    cat <<EOF
+${BOLD}optimIA${NC} v${OPTIMIA_VERSION} — AI tool orchestrator
+
+${BOLD}USAGE${NC}
+  optimia              Launch AI for current directory
+  optimia config       Show / edit global config
+  optimia repos        List / forget known repos
+  optimia tools        List / edit tool definitions
+  optimia agents       Edit AGENTS.md in \$EDITOR
+
+${BOLD}OPTIONS${NC}
+  -V, --version        Print version
+  -h, --help           Print this help
+
+${BOLD}CONFIG${NC}
+  ${OPTIMIA_CONFIG_DIR}/
+    config.conf        Global settings
+    tools.conf         Tool definitions (editable)
+    AGENTS.md          Agent instructions (editable)
+    repos/             Per-repo configs
+EOF
+}
+
+# ── Entry point ────────────────────────────────────────────────────────────────
+main() {
+    case "${1:-}" in
+        --version|-V) echo "optimIA $OPTIMIA_VERSION"; exit 0 ;;
+        --help|-h)    show_help; exit 0 ;;
+        config)  shift; ensure_config; cmd_config  "$@"; exit 0 ;;
+        repos)   shift; ensure_config; cmd_repos   "$@"; exit 0 ;;
+        tools)   shift; ensure_config; cmd_tools   "$@"; exit 0 ;;
+        agents)  shift; ensure_config; cmd_agents  "$@"; exit 0 ;;
+    esac
+
+    ensure_config
+
+    print_banner
+
+    local repo_conf
+    repo_conf=$(repo_conf_file)
+
+    # First time in this repo: run wizard
+    if ! is_known_repo; then
+        configure_new_repo "$repo_conf"
+    fi
+
+    # Codegraph (only in git repos)
+    if is_git_repo; then
+        handle_codegraph "$repo_conf"
+    fi
+
+    # Determine AI tool
+    local ai_tool
+    ai_tool=$(kv_get "$repo_conf" "ai_tool" "")
+    [[ -z "$ai_tool" ]] && ai_tool=$(kv_get "$OPTIMIA_GLOBAL_FILE" "default_ai" "claude")
+
+    if [[ "$ai_tool" == "ask" ]]; then
+        local -a ai_tools=()
+        mapfile -t ai_tools < <(list_ai_tools)
+        echo ""
+        ai_tool=$(ask_choice "Which AI tool?" "${ai_tools[@]}")
+    fi
+
+    launch_ai_tool "$ai_tool" "$repo_conf"
+}
+
+main "$@"

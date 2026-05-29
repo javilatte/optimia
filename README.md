@@ -10,7 +10,7 @@ AI tool orchestrator for developers. Run `optimia` in any project directory and 
 - Build or sync a [CodeGraph](https://github.com/colbymchenry/codegraph) code-intelligence index
 - Capture session context via three quick questions and inject it into the AI tool
 - Write security constraints to `.claude/settings.json` and other tool config files
-- Launch the AI CLI wrapped in [headroom](https://github.com/nicholasgasior/headroom) for 60–90% token savings
+- Launch the AI CLI wrapped in [headroom](https://github.com/chopratejas/headroom) for 60–90% token savings
 
 ```
 $ optimia

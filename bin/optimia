@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 # optimIA — AI Tool Orchestrator
-# Detects the current repo, configures codegraph + headroom, and launches the
-# right AI CLI. Config lives in ~/.config/optimia/.
+# Global config: ~/.config/optimia/   Per-project data: .optimia/
 
 set -euo pipefail
 
-OPTIMIA_VERSION="0.1.0"
+OPTIMIA_VERSION="0.2.1"
 OPTIMIA_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/optimia"
 OPTIMIA_REPOS_DIR="$OPTIMIA_CONFIG_DIR/repos"
 OPTIMIA_TOOLS_FILE="$OPTIMIA_CONFIG_DIR/tools.conf"
 OPTIMIA_AGENTS_FILE="$OPTIMIA_CONFIG_DIR/AGENTS.md"
 OPTIMIA_GLOBAL_FILE="$OPTIMIA_CONFIG_DIR/config.conf"
+
+# Per-project state directory (new layout).
+# Legacy repos that already have .codegraph/ at root are used as-is.
+OPTIMIA_LOCAL_DIR=".optimia"
 
 # ── Colors ─────────────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -19,6 +22,153 @@ if [[ -t 1 ]]; then
 else
     RED='' GREEN='' YELLOW='' CYAN='' BOLD='' DIM='' NC=''
 fi
+
+# ── Locale ─────────────────────────────────────────────────────────────────────
+# Detect Spanish locale (LANG/LC_ALL starting with "es").
+_L="${LANG:-${LC_ALL:-${LC_MESSAGES:-en}}}"
+if [[ "$_L" =~ ^es([_\.].+)?$ ]]; then
+    _MSG_SUBTITLE="orquestador de herramientas IA"
+    _MSG_PKGS_MISSING="Algunos paquetes del workflow no están instalados:"
+    _MSG_PKGS_INSTALL_ASK="¿Instalar los paquetes que faltan ahora?"
+    _MSG_INSTALLING="Instalando"
+    _MSG_INSTALL_OK="instalado."
+    _MSG_INSTALL_FAIL="Falló la instalación de"
+    _MSG_INSTALL_MANUAL="Instala manualmente:"
+    _MSG_INSTALL_PIPX="O instala pipx: sudo apt install pipx"
+    _MSG_PIPX_FALLBACK="pipx no encontrado — usando pip install --user"
+    _MSG_QQ_HEADER="── Preguntas rápidas"
+    _MSG_QQ_SKIP="(opcional — Enter para omitir)"
+    _MSG_QQ_1="¿Qué implementamos esta sesión?"
+    _MSG_QQ_2="¿Quieres que te haga preguntas sobre sus dudas?"
+    _MSG_QQ_3="¿Algo que tenga que tener en cuenta?"
+    _MSG_QQ_YES="Sí" _MSG_QQ_NO="No"
+    _MSG_SETTINGS_NEW="Configuración de seguridad creada →"
+    _MSG_QQ_SAVED="Contexto guardado →"
+    _MSG_QQ_CLAUDE_NEW="CLAUDE.md creado con referencia al contexto de sesión."
+    _MSG_QQ_CLAUDE_ADD="Referencia de contexto añadida a CLAUDE.md."
+    _MSG_QQ_AGENTS_NEW="AGENTS.md creado con referencia al contexto de sesión."
+    _MSG_QQ_AGENTS_ADD="Referencia de contexto añadida a AGENTS.md."
+    _MSG_QQ_COPILOT_ADD="Instrucciones de Copilot actualizadas →"
+    _MSG_LAUNCH="Lanzando"
+    _MSG_CMD_MISSING="Comando no encontrado. Instalar:"
+    _MSG_HEADROOM_MISSING="headroom no encontrado — lanzando directamente"
+    _MSG_NEW_REPO="── Nuevo repo:"
+    _MSG_WHICH_AI="¿Qué herramienta AI para este repo?"
+    _MSG_WHICH_AI2="¿Qué herramienta AI?"
+    _MSG_ONLY_TOOL="Única herramienta disponible:"
+    _MSG_ASK_EACH="preguntar cada vez"
+    _MSG_REPO_CONF="Repo configurado →"
+    _MSG_REPO_FORGOTTEN="Repo olvidado. La siguiente ejecución reconfigurará."
+    _MSG_REPO_NOT_KNOWN="Repositorio actual no registrado."
+    _MSG_CG_ENABLE="¿Activar CodeGraph para este repo? (grafo de inteligencia de código)"
+    _MSG_CG_NOT_INIT="CodeGraph aún no inicializado para este repo."
+    _MSG_CG_INIT_ASK="¿Inicializar ahora? (construye el índice de código)"
+    _MSG_CG_INIT_LOG="Construyendo índice de código…"
+    _MSG_CG_INIT_OK="CodeGraph inicializado."
+    _MSG_CG_SYNC_ASK="¿Sincronizar CodeGraph? (actualizar índice con cambios recientes)"
+    _MSG_CG_SYNC_LOG="Sincronizando índice de código…"
+    _MSG_CG_SYNC_OK="CodeGraph sincronizado."
+else
+    _MSG_SUBTITLE="AI tool orchestrator"
+    _MSG_PKGS_MISSING="Some workflow tools are not installed:"
+    _MSG_PKGS_INSTALL_ASK="Install missing packages now?"
+    _MSG_INSTALLING="Installing"
+    _MSG_INSTALL_OK="installed."
+    _MSG_INSTALL_FAIL="Failed to install"
+    _MSG_INSTALL_MANUAL="Install manually:"
+    _MSG_INSTALL_PIPX="Or install pipx: sudo apt install pipx"
+    _MSG_PIPX_FALLBACK="pipx not found — using pip install --user"
+    _MSG_QQ_HEADER="── Quick questions"
+    _MSG_QQ_SKIP="(optional — press Enter to skip)"
+    _MSG_QQ_1="What are we implementing this session?"
+    _MSG_QQ_2="Do you want me to ask questions about my doubts?"
+    _MSG_QQ_3="Anything I need to keep in mind?"
+    _MSG_QQ_YES="Yes" _MSG_QQ_NO="No"
+    _MSG_SETTINGS_NEW="Security settings created →"
+    _MSG_QQ_SAVED="Context saved →"
+    _MSG_QQ_CLAUDE_NEW="CLAUDE.md created with session context reference."
+    _MSG_QQ_CLAUDE_ADD="Session context reference added to CLAUDE.md."
+    _MSG_QQ_AGENTS_NEW="AGENTS.md created with session context reference."
+    _MSG_QQ_AGENTS_ADD="Session context reference added to AGENTS.md."
+    _MSG_QQ_COPILOT_ADD="Copilot instructions updated →"
+    _MSG_LAUNCH="Launching"
+    _MSG_CMD_MISSING="Command not found. Install:"
+    _MSG_HEADROOM_MISSING="headroom not found — launching directly"
+    _MSG_NEW_REPO="── New repo:"
+    _MSG_WHICH_AI="Which AI tool for this repo?"
+    _MSG_WHICH_AI2="Which AI tool?"
+    _MSG_ONLY_TOOL="Only available tool:"
+    _MSG_ASK_EACH="ask each time"
+    _MSG_REPO_CONF="Repo configured →"
+    _MSG_REPO_FORGOTTEN="Repo forgotten. Next run will reconfigure."
+    _MSG_REPO_NOT_KNOWN="Current repo not in known repos."
+    _MSG_CG_ENABLE="Enable ${CYAN}CodeGraph${NC} for this repo? (code-intelligence graph)"
+    _MSG_CG_NOT_INIT="CodeGraph not yet initialised for this repo."
+    _MSG_CG_INIT_ASK="Initialise now? (builds code index — may take a moment)"
+    _MSG_CG_INIT_LOG="Building code index…"
+    _MSG_CG_INIT_OK="CodeGraph initialised."
+    _MSG_CG_SYNC_ASK="Sync CodeGraph? (update index with recent changes)"
+    _MSG_CG_SYNC_LOG="Syncing code index…"
+    _MSG_CG_SYNC_OK="CodeGraph synced."
+fi
+
+# ── Platform check ─────────────────────────────────────────────────────────────
+check_platform() {
+    local os
+    os=$(uname -s 2>/dev/null || echo "unknown")
+    case "$os" in
+        Linux|Darwin) return 0 ;;
+        CYGWIN*|MINGW*|MSYS*)
+            log_warn "Running on Windows (Git Bash/Cygwin). Most features work."
+            log_warn "For best results use WSL: wsl.exe --install"
+            ;;
+        *)
+            log_err "Unsupported platform '$os'. optimIA requires Linux, macOS, or WSL/Git Bash."
+            exit 1
+            ;;
+    esac
+}
+
+# ── Safe installer ─────────────────────────────────────────────────────────────
+# Runs an install command only if its first word is on the allowlist.
+# Uses array exec (not eval) so shell metacharacters in the command string
+# cannot be injected even if tools.conf is tampered with.
+safe_install() {
+    local -a parts=()
+    read -ra parts <<< "$1"
+    local first="${parts[0]:-}"
+    case "$first" in
+        npm|npx|pip|pip3|pipx|apt|apt-get|brew|yarn|pnpm) ;;
+        *)
+            log_warn "Unrecognised installer '$first' — skipping auto-install."
+            log_warn "Run manually if you trust it: $1"
+            return 1 ;;
+    esac
+    # For pip/pip3: detect PEP 668 (Ubuntu externally-managed) and bail out
+    # rather than adding --break-system-packages automatically — that can
+    # silently break system tools. Let the user decide.
+    if [[ "$first" == "pip" || "$first" == "pip3" ]]; then
+        local out
+        if ! out=$("${parts[@]}" 2>&1); then
+            if printf '%s' "$out" | grep -q 'externally-managed-environment'; then
+                log_warn "System pip blocked (PEP 668). Install manually in a venv:"
+                printf '    python3 -m venv ~/.local/share/optimia-tools\n'
+                printf '    ~/.local/share/optimia-tools/bin/pip install %s\n' "${parts[*]:2}"
+            else
+                printf '%s\n' "$out" >&2
+                return 1
+            fi
+            return 1
+        fi
+        return 0
+    fi
+    # pipx fallback for Ubuntu externally-managed environments
+    if [[ "$first" == "pipx" ]] && ! command -v pipx &>/dev/null; then
+        log_warn "$_MSG_PIPX_FALLBACK"
+        parts=(pip install --user "${parts[@]:2}")
+    fi
+    "${parts[@]}"
+}
 
 print_banner() {
     local O='' C='' R='' D=''
@@ -35,7 +185,7 @@ print_banner() {
     printf '  %s█  █ █     █    █  █   █ %s █  █  █%s\n' "$O" "$C" "$R"
     printf '  %s ██  █     █   ███ █   █ %s███ █  █%s\n'  "$O" "$C" "$R"
     printf '\n'
-    printf '  %sAI tool orchestrator  v%s%s\n\n' "$D" "$OPTIMIA_VERSION" "$R"
+    printf '  %s%s  v%s%s\n\n' "$D" "$_MSG_SUBTITLE" "$OPTIMIA_VERSION" "$R"
 }
 
 log()      { echo -e "${CYAN}→${NC} $*"; }
@@ -44,9 +194,6 @@ log_warn() { echo -e "${YELLOW}⚠${NC} $*"; }
 log_err()  { echo -e "${RED}✗${NC} $*" >&2; }
 
 # ── Key-value helpers (flat file: key=value) ───────────────────────────────────
-# Both functions use awk for exact string matching — no regex or sed delimiter
-# injection possible regardless of key/value content.
-
 kv_get() {
     local file="$1" key="$2" default="${3:-}"
     _KVKEY="$key" _KVDEF="$default" \
@@ -72,9 +219,6 @@ kv_set() {
     local file="$1" key="$2" value="$3"
     mkdir -p "$(dirname "$file")"
     touch "$file"
-    # Use ENVIRON to avoid awk -v escape processing on user-controlled values.
-    # found flag pattern: END always runs after explicit exit, so set a flag
-    # and let END determine the exit code rather than calling exit 0 in a rule.
     if _KVKEY="$key" awk '
         BEGIN { k=ENVIRON["_KVKEY"] }
         { eq=index($0,"="); if(eq>0){ kk=substr($0,1,eq-1); gsub(/[[:space:]]/,"",kk); if(kk==k){ found=1; exit } } }
@@ -101,8 +245,6 @@ kv_set() {
 # ── INI helpers (sectioned file: [section] / key=value) ───────────────────────
 ini_get() {
     local file="$1" section="$2" key="$3" default="${4:-}"
-    # Use ENVIRON instead of -v to avoid awk escape-sequence processing on
-    # user-controlled section/key values (backslashes in -v are expanded).
     _INISEC="$section" _INIKEY="$key" _INIDEF="$default" \
     awk '
         BEGIN { sec=ENVIRON["_INISEC"]; k=ENVIRON["_INIKEY"]; def=ENVIRON["_INIDEF"] }
@@ -178,6 +320,256 @@ repo_label() {
 repo_conf_file() { echo "$OPTIMIA_REPOS_DIR/$(repo_id).conf"; }
 is_known_repo()  { [[ -f "$(repo_conf_file)" ]]; }
 
+# ── Project-local directory (.optimia/) ───────────────────────────────────────
+#
+# Layouts:
+#   optimia  — .optimia/ exists (new style)
+#   legacy   — .codegraph/ is a real directory at root (old style, left alone)
+#   fresh    — neither exists yet (initialise as new style)
+#
+detect_layout() {
+    if [[ -d "$OPTIMIA_LOCAL_DIR" ]]; then
+        echo "optimia"
+    elif [[ -d ".codegraph" && ! -L ".codegraph" ]]; then
+        echo "legacy"
+    else
+        echo "fresh"
+    fi
+}
+
+# Returns the directory where the codegraph database lives.
+get_cg_dir() {
+    case "$(detect_layout)" in
+        legacy) echo ".codegraph" ;;
+        *)      echo "$OPTIMIA_LOCAL_DIR/.codegraph" ;;
+    esac
+}
+
+# Writes the security rules as a markdown doc for context-based enforcement.
+# Called by write_project_settings; also included in AGENTS.md and
+# copilot-instructions.md so opencode and Copilot get the same constraints.
+_write_security_md() {
+    local f="$OPTIMIA_LOCAL_DIR/security.md"
+    [[ -f "$f" ]] && return 0
+    mkdir -p "$OPTIMIA_LOCAL_DIR"
+    cat > "$f" <<'EOF'
+## Security constraints
+
+These rules apply to ALL operations — do not perform them even if asked.
+
+**Do not read:**
+`.env*` · `.dev.vars*` · `*.pem` · `*.key` · `*.p12` · `secrets/` · `credentials/`
+`.npmrc` · `.pypirc` · `.ssh/` · `.aws/` · `.azure/` · `.gcloud/`
+`.docker/config.json` · `.kube/config` · `.gnupg/`
+
+**Do not write:**
+`.env*` · `secrets/` · `.ssh/` · `.github/workflows/*` · `package-lock.json`
+
+**Do not run:**
+`git commit` (propose changes — let the human commit and review)
+`rm -rf` · `sudo` · `chmod` · `chown` · `curl` · `wget` · `nc` · `ssh` · `scp`
+`git push --force` · `git reset --hard` · `npm publish` · `docker`
+
+> Claude Code enforces these rules at the OS level via `.claude/settings.json`.
+> For other AI tools these are binding instructions — follow them strictly.
+EOF
+}
+
+# Writes .claude/settings.json with locked-down permissions if not present.
+# Also seeds .optimia/security.md and adds a static security block to
+# .github/copilot-instructions.md (separate from the session block).
+# Only created once — never overwritten — so teams can customise freely.
+write_project_settings() {
+    # 1. Claude Code: hard enforcement
+    local cf=".claude/settings.json"
+    if [[ ! -f "$cf" ]]; then
+        mkdir -p .claude
+        cat > "$cf" <<'EOF'
+{
+  "permissions": {
+    "allow": [
+      "Read", "Glob", "Grep", "LS", "Edit", "MultiEdit",
+      "Write(src/**)", "Write(tests/**)", "Write(docs/**)",
+      "Bash(npm run *)", "Bash(npm test *)", "Bash(npx tsc *)",
+      "Bash(npx prettier *)", "Bash(npx eslint *)",
+      "Bash(git status)", "Bash(git diff *)", "Bash(git log *)",
+      "Bash(git add *)"
+    ],
+    "deny": [
+      "Read(**/.env*)",
+      "Read(**/.dev.vars*)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Read(**/*.p12)",
+      "Read(**/secrets/**)",
+      "Read(**/credentials/**)",
+      "Read(**/.npmrc)",
+      "Read(**/.pypirc)",
+      "Read(**/.ssh/**)",
+      "Read(**/.aws/**)",
+      "Read(**/.azure/**)",
+      "Read(**/.gcloud/**)",
+      "Read(**/.docker/config.json)",
+      "Read(**/.kube/config)",
+      "Read(**/.gnupg/**)",
+      "Write(**/.env*)",
+      "Write(**/secrets/**)",
+      "Write(**/.ssh/**)",
+      "Write(.github/workflows/*)",
+      "Write(package-lock.json)",
+      "Bash(git commit *)",
+      "Bash(rm -rf *)",
+      "Bash(sudo *)",
+      "Bash(chmod *)",
+      "Bash(chown *)",
+      "Bash(curl *)",
+      "Bash(wget *)",
+      "Bash(nc *)",
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Bash(git push --force*)",
+      "Bash(git reset --hard*)",
+      "Bash(npm publish*)",
+      "Bash(docker *)"
+    ],
+    "defaultMode": "acceptEdits"
+  }
+}
+EOF
+        log_ok "$_MSG_SETTINGS_NEW ${DIM}${cf}${NC}"
+    fi
+
+    # 2. OpenCode / any agent: security.md (included in AGENTS.md at session start)
+    _write_security_md
+
+    # 3. Copilot: static security block (separate from the session block)
+    local cop_file=".github/copilot-instructions.md"
+    local sec_start="<!-- optimIA:security:start -->"
+    local sec_end="<!-- optimIA:security:end -->"
+    if ! grep -qF "$sec_start" "$cop_file" 2>/dev/null; then
+        mkdir -p .github
+        local sec_body
+        sec_body=$(cat "$OPTIMIA_LOCAL_DIR/security.md" 2>/dev/null || true)
+        printf '\n%s\n%s\n%s\n' "$sec_start" "$sec_body" "$sec_end" >> "$cop_file"
+    fi
+}
+
+# Creates .optimia/ and a root-level .codegraph symlink for tool/MCP compat.
+# No-op for legacy repos (real .codegraph/ dir at root).
+ensure_project_dir() {
+    local layout
+    layout=$(detect_layout)
+    [[ "$layout" == "legacy" ]] && return 0
+
+    mkdir -p "$OPTIMIA_LOCAL_DIR"
+
+    # Codegraph symlink and .codegraph/ subdir only make sense in git repos.
+    if is_git_repo; then
+        mkdir -p "$OPTIMIA_LOCAL_DIR/.codegraph"
+        # Symlink .codegraph → .optimia/.codegraph so the codegraph CLI and MCP
+        # server find the database at the expected root-level path without changes.
+        if [[ ! -d ".codegraph" && ! -f ".codegraph" ]]; then
+            ln -sf "$OPTIMIA_LOCAL_DIR/.codegraph" ".codegraph"
+        fi
+    fi
+
+    if is_git_repo; then
+        local gi=".gitignore"
+        touch "$gi"
+        grep -qE '^/?\.optimia/?$'   "$gi" 2>/dev/null || printf '\n/.optimia\n'  >> "$gi"
+        grep -qE '^/?\.codegraph/?$' "$gi" 2>/dev/null || printf '/.codegraph\n'  >> "$gi"
+    fi
+
+    write_project_settings
+}
+
+# ── Package checking ───────────────────────────────────────────────────────────
+
+# True if a command (or python:module) is available.
+pkg_installed() {
+    local spec="$1"
+    if [[ "$spec" == python:* ]]; then
+        python3 -c "import ${spec#python:}" &>/dev/null 2>&1
+    else
+        command -v "$spec" &>/dev/null
+    fi
+}
+
+# Human-readable install hint for known packages.
+get_install_hint() {
+    case "$1" in
+        claude)       echo "npm install -g @anthropic-ai/claude-code" ;;
+        opencode)     echo "npm install -g opencode" ;;
+        headroom)     echo "npm install -g headroom" ;;
+        gemini)       echo "npm install -g @google/gemini-cli" ;;
+        copilot)      echo "gh extension install github/gh-copilot" ;;
+        agentmemory)  echo "pipx install agentmemory" ;;
+        webwright)    echo "pipx install webwright" ;;
+        *)            echo "(see documentation for $1)" ;;
+    esac
+}
+
+# Checks all enabled tools; prompts to install any that are missing.
+check_workflow_packages() {
+    local -a missing_names=()
+    local -a missing_hints=()
+    local -a missing_descs=()
+
+    local -a secs=()
+    mapfile -t secs < <(ini_sections "$OPTIMIA_TOOLS_FILE")
+
+    local tool
+    for tool in "${secs[@]}"; do
+        local enabled cmd check_cmd
+        enabled=$(ini_get "$OPTIMIA_TOOLS_FILE" "$tool" "enabled" "false")
+        [[ "$enabled" != "true" ]] && continue
+
+        cmd=$(ini_get "$OPTIMIA_TOOLS_FILE" "$tool" "command" "")
+        [[ -z "$cmd" ]] && continue
+
+        # "npx pkg" commands only need node/npx in PATH.
+        read -r check_cmd _ <<< "$cmd"
+        [[ "$check_cmd" == "npx" ]] && check_cmd="npx"
+
+        pkg_installed "$check_cmd" && continue
+
+        local hint desc
+        hint=$(ini_get "$OPTIMIA_TOOLS_FILE" "$tool" "install_hint" "$(get_install_hint "$tool")")
+        desc=$(ini_get "$OPTIMIA_TOOLS_FILE" "$tool" "description" "$tool")
+        missing_names+=("$tool")
+        missing_hints+=("$hint")
+        missing_descs+=("$desc")
+    done
+
+    [[ ${#missing_names[@]} -eq 0 ]] && return 0
+
+    echo ""
+    log_warn "$_MSG_PKGS_MISSING"
+    echo ""
+    local i
+    for i in "${!missing_names[@]}"; do
+        printf '  %s%s%s — %s%s%s\n' \
+            "$BOLD" "${missing_names[$i]}" "$NC" \
+            "$DIM"  "${missing_descs[$i]}" "$NC"
+        printf '    %s%s%s %s\n' "$CYAN" "$_MSG_INSTALL_MANUAL" "$NC" "${missing_hints[$i]}"
+    done
+    echo ""
+
+    if ask_yn "$_MSG_PKGS_INSTALL_ASK" "n"; then
+        for i in "${!missing_names[@]}"; do
+            log "$_MSG_INSTALLING ${missing_names[$i]}: ${missing_hints[$i]}"
+            if safe_install "${missing_hints[$i]}"; then
+                log_ok "${missing_names[$i]} $_MSG_INSTALL_OK"
+            else
+                log_err "$_MSG_INSTALL_FAIL ${missing_names[$i]}."
+                printf '    %s %s\n' "$_MSG_INSTALL_MANUAL" "${missing_hints[$i]}"
+                printf '    %s\n' "$_MSG_INSTALL_PIPX"
+            fi
+        done
+    fi
+    echo ""
+}
+
 # ── Default config files ───────────────────────────────────────────────────────
 write_default_global() {
     cat > "$OPTIMIA_GLOBAL_FILE" <<'EOF'
@@ -188,6 +580,7 @@ default_ai=claude
 use_headroom=true
 headroom_flags=
 ask_codegraph_update=true
+ask_quick_questions=true
 EOF
 }
 
@@ -199,13 +592,14 @@ write_default_tools() {
 # Run: optimia tools edit   — open this file in $EDITOR
 #
 # Fields:
-#   command      executable (or "npx pkg")
-#   description  shown in menus
-#   order        sort order (lower = earlier)
-#   enabled      true | false
-#   ai_tool      true if this is a launchable AI CLI
-#   wrapper      headroom | (blank)
-#   launch_args  extra flags appended at launch
+#   command       executable (or "npx pkg")
+#   description   shown in menus
+#   order         sort order (lower = earlier)
+#   enabled       true | false
+#   ai_tool       true if this is a launchable AI CLI
+#   wrapper       headroom | (blank)
+#   launch_args   extra flags appended at launch
+#   install_hint  command to run if tool is not installed
 
 [codegraph]
 command=npx @colbymchenry/codegraph
@@ -213,6 +607,7 @@ description=Code intelligence knowledge graph
 order=1
 enabled=true
 ai_tool=false
+install_hint=npm install -g @colbymchenry/codegraph
 
 [headroom]
 command=headroom
@@ -220,6 +615,7 @@ description=Token-efficient AI wrapper (60-90% savings)
 order=2
 enabled=true
 ai_tool=false
+install_hint=npm install -g headroom
 
 [claude]
 command=claude
@@ -229,6 +625,7 @@ enabled=true
 ai_tool=true
 wrapper=headroom
 launch_args=
+install_hint=npm install -g @anthropic-ai/claude-code
 
 [opencode]
 command=opencode
@@ -238,6 +635,7 @@ enabled=true
 ai_tool=true
 wrapper=headroom
 launch_args=
+install_hint=npm install -g opencode
 
 [gemini]
 command=gemini
@@ -247,6 +645,18 @@ enabled=false
 ai_tool=true
 wrapper=headroom
 launch_args=
+install_hint=npm install -g @google/gemini-cli
+
+[copilot]
+command=copilot
+description=GitHub Copilot CLI
+order=6
+enabled=true
+ai_tool=true
+wrapper=
+launch_args=
+install_hint=gh extension install github/gh-copilot
+
 EOF
 }
 
@@ -261,9 +671,30 @@ working in repositories managed by optimIA. Edit it to customise agent behaviour
 
 A launcher that:
 1. Identifies the current repository (git remote URL or directory hash)
-2. Loads per-repo preferences from `~/.config/optimia/repos/<hash>.conf`
-3. Optionally syncs the CodeGraph code-intelligence index
-4. Launches the configured AI CLI wrapped in headroom for token savings
+2. Ensures the per-project `.optimia/` directory exists (new layout)
+3. Checks that workflow packages are installed — prompts to install if not
+4. Optionally syncs the CodeGraph code-intelligence index
+5. Captures session context via optional quick questions
+6. Launches the configured AI CLI wrapped in headroom for token savings
+
+## Project-local directory (.optimia/)
+
+All per-project state lives in `.optimia/` (gitignored):
+
+```
+.optimia/
+├── .codegraph/      CodeGraph database (symlinked as /.codegraph for compat)
+├── session.md       Session context from quick questions (raw)
+└── CLAUDE.md        Session context formatted for Claude Code
+```
+
+A symlink `.codegraph → .optimia/.codegraph` is created at the project root so
+that the codegraph CLI and MCP server find the database at the expected path
+without any changes to those tools.
+
+**Backwards compatibility**: if `.codegraph/` already exists as a *real*
+directory at the project root (legacy layout), optimIA uses it as-is and does
+not create `.optimia/`. Everything works exactly as before.
 
 ## Launch flow
 
@@ -272,61 +703,113 @@ $ optimia
   │
   ├─ 1. Detect repo (git remote → hash, or pwd → hash)
   │
-  ├─ 2. First time? → wizard
+  ├─ 2. Detect layout: .optimia/ (new) | .codegraph/ real dir (legacy) | fresh
+  │     New / fresh → create .optimia/, symlink .codegraph, update .gitignore
+  │     Legacy      → skip (use existing .codegraph/ as-is)
+  │
+  ├─ 3. Check workflow packages (all enabled tools in tools.conf)
+  │     Missing → show install hint, offer to install
+  │
+  ├─ 4. First time? → wizard
   │     Select AI tool (claude / opencode / ask each time)
   │     Enable CodeGraph? (y/n)
   │
-  ├─ 3. CodeGraph (order=1) — if enabled
-  │     Not initialised → ask to run: npx @colbymchenry/codegraph init -i
-  │     Initialised      → ask to run: npx @colbymchenry/codegraph sync
+  ├─ 5. CodeGraph (order=1) — if enabled
+  │     Not initialised → ask: npx @colbymchenry/codegraph init -i
+  │     Initialised      → ask: npx @colbymchenry/codegraph sync
   │
-  ├─ 4. AI tool selection (order=3+)
-  │     From repo config, global default, or interactive ask
+  ├─ 6. Preguntas rápidas (optional, ask_quick_questions=true)
+  │     1. ¿Qué implementamos esta sesión?
+  │     2. ¿Quieres que Claude te haga preguntas sobre sus dudas?
+  │     3. ¿Algo que tenga que tener en cuenta?
+  │     → .optimia/session.md  (raw answers)
+  │     → .optimia/CLAUDE.md   (formatted, read by Claude Code)
+  │     → @.optimia/CLAUDE.md added to project CLAUDE.md once per project
+  │     → OPTIMIA_SESSION_FILE env var set for opencode and other tools
   │
-  └─ 5. Launch
+  ├─ 7. AI tool selection (repo config → global default → ask)
+  │
+  └─ 8. Launch
         headroom wrap <headroom_flags> <ai_command> <launch_args>
-        (or direct launch if headroom is disabled or not installed)
+        (direct launch if headroom is disabled or not installed)
 ```
 
 ## Available tools
 
 ### CodeGraph  (order=1)
-**Purpose**: Parses the codebase into a SQLite knowledge graph
+**Purpose**: Parses the codebase into a SQLite knowledge graph.
 **Binary**: `npx @colbymchenry/codegraph`
+**Data**: `.optimia/.codegraph/` (symlinked as `.codegraph` at root)
+**Install**: `npm install -g @colbymchenry/codegraph`
 
 | Subcommand | When to use |
 |---|---|
 | `init -i` | First time in a project |
 | `sync` | After making code changes |
-| `status` | Check index health |
 | `context "<task>"` | Best first call — focused context for a task |
 | `query "<symbol>"` | Find a symbol by name |
-| `files` | List indexed project structure |
-| `serve` | Start as MCP server for AI assistants |
-
-> **Tip**: `codegraph context "<describe your task>"` is the fastest way to get
-> oriented in an unfamiliar codebase. Use it before exploring with grep/read.
 
 ### Headroom  (order=2)
-**Purpose**: Token-optimised proxy — filters redundant output before it reaches
-the AI context window.
+**Purpose**: Token-optimised proxy — 60-90% fewer tokens.
 **Command**: `headroom wrap [flags] <ai-command>`
-**Flags** (configured via `headroom_flags` in config.conf):
-- `--memory` — enable persistent memory across sessions
+**Install**: `npm install -g headroom`
 
 ### Claude Code  (order=3)
-**Command**: `claude`
-**Launched as**: `headroom wrap --memory claude`
-**Best for**: Coding tasks, refactoring, debugging, code review
+**Command**: `claude`  **Launched as**: `headroom wrap [flags] claude`
+**Install**: `npm install -g @anthropic-ai/claude-code`
+**Session context**: reads `.optimia/CLAUDE.md` via `@` include in project CLAUDE.md
 
 ### OpenCode  (order=4)
-**Command**: `opencode`
-**Launched as**: `headroom wrap opencode`
-**Best for**: Alternative to Claude; multi-provider support
+**Command**: `opencode`  **Launched as**: `headroom wrap opencode`
+**Install**: `npm install -g opencode`
+**Session context**: reads `OPTIMIA_SESSION_FILE` env var
 
 ### Gemini CLI  (order=5, disabled by default)
 **Command**: `gemini`
-**Enable**: set `enabled=true` in `~/.config/optimia/tools.conf`
+**Install**: `npm install -g @google/gemini-cli`
+
+### GitHub Copilot CLI  (order=6, disabled by default)
+**Command**: `gh copilot`  **Launched as**: `gh copilot suggest`
+**Install**: `gh extension install github/gh-copilot`
+**Session context**: `.github/copilot-instructions.md` — optimIA maintains a
+`<!-- optimIA:session:start/end -->` block that is updated on every launch.
+Enable by setting `enabled=true` in tools.conf `[copilot]` section.
+
+### agentmemory  (order=7)
+**Purpose**: Persistent memory across AI sessions. Runs as an MCP server
+compatible with Claude Code, OpenCode, GitHub Copilot CLI, Cursor, Gemini CLI,
+Codex CLI, and any MCP client.
+**Install**: `pipx install agentmemory`
+**GitHub**: https://github.com/rohitg00/agentmemory
+
+### webwright  (order=8)
+**Purpose**: State-of-the-art browser automation for AI agents. Gives the model
+a terminal to launch browser sessions, capture screenshots, inspect page state,
+and complete web tasks end-to-end as a single re-runnable Python script.
+No multi-agent system, no graph engine — just a terminal and a browser.
+**Install**: `pipx install webwright`
+
+---
+
+## Session context (Preguntas rápidas)
+
+When `ask_quick_questions=true`, optimIA asks 3 optional questions at launch:
+
+1. ¿Qué implementamos esta sesión?
+2. ¿Quieres que te haga preguntas sobre sus dudas?
+3. ¿Algo que tenga que tener en cuenta?
+
+Press Enter to skip any question. Answers are saved to `.optimia/session.md`.
+
+| AI tool | Mechanism |
+|---|---|
+| **Claude Code** | `@.optimia/CLAUDE.md` appended to `CLAUDE.md` once |
+| **opencode** | `@.optimia/AGENTS.md` appended to `AGENTS.md` once |
+| **Gemini CLI** | `@.optimia/GEMINI.md` appended to `GEMINI.md` once |
+| **GitHub Copilot** | managed block in `.github/copilot-instructions.md` (updated each launch) |
+| **Any tool** | `OPTIMIA_SESSION_FILE` env var set to `.optimia/session.md` |
+
+To disable: set `ask_quick_questions=false` in `~/.config/optimia/config.conf`
 
 ---
 
@@ -334,27 +817,30 @@ the AI context window.
 
 | File | Purpose |
 |---|---|
-| `~/.config/optimia/config.conf` | Global defaults (default_ai, headroom_flags…) |
-| `~/.config/optimia/tools.conf` | Tool definitions — edit to add/remove/reorder |
-| `~/.config/optimia/repos/<hash>.conf` | Per-repo overrides |
+| `~/.config/optimia/config.conf` | Global defaults |
+| `~/.config/optimia/tools.conf` | Tool definitions — editable |
 | `~/.config/optimia/AGENTS.md` | This file |
+| `~/.config/optimia/repos/<hash>.conf` | Per-repo overrides |
+| `.optimia/session.md` | Session context raw (per-project, gitignored) |
+| `.optimia/CLAUDE.md` | Session context for Claude Code |
 
 ### Global config keys
 
 ```ini
-default_ai=claude          # Fallback AI tool if repo has none set
-use_headroom=true          # Wrap AI with headroom by default
-headroom_flags=--memory    # Flags passed to `headroom wrap`
-ask_codegraph_update=true  # Prompt to sync codegraph on each launch
+default_ai=claude
+use_headroom=true
+headroom_flags=
+ask_codegraph_update=true
+ask_quick_questions=true    # Show Preguntas rápidas at launch
 ```
 
 ### Per-repo config keys
 
 ```ini
-ai_tool=claude             # AI tool for this repo (claude|opencode|…|ask)
-use_codegraph=true         # Whether CodeGraph is enabled
-codegraph_initialized=true # Has `codegraph init` been run here
-use_headroom=true          # Override global headroom setting
+ai_tool=claude
+use_codegraph=true
+codegraph_initialized=true
+use_headroom=true
 ```
 
 ---
@@ -362,44 +848,75 @@ use_headroom=true          # Override global headroom setting
 ## Adding a new tool
 
 1. Open `~/.config/optimia/tools.conf` (`optimia tools edit`)
-2. Add a section at the desired order:
+2. Add a section:
 
 ```ini
 [mytool]
 command=mytool
 description=My custom AI assistant
-order=6
+order=8
 enabled=true
 ai_tool=true
 wrapper=headroom
-launch_args=--my-flag
+launch_args=
+install_hint=npm install -g mytool
 ```
-
-3. Update this AGENTS.md with the new tool's documentation.
-
----
-
-## Notes for AI agents
-
-- Always call `codegraph context "<task>"` at the start of a session — it's faster
-  than a grep/read exploration loop and uses a pre-built AST-parsed index.
-- Token savings from headroom accumulate per session. Check them with `rtk gain`.
-- If codegraph returns stale results (deleted symbols), run `codegraph sync`.
-- The `--memory` flag keeps Claude Code's memory active across sessions — don't
-  disable it unless you want a stateless session.
 AGENTS
+}
+
+# Appends a tool section to tools.conf if that section doesn't exist yet.
+# Used for migrating configs from older versions.
+_tools_append_section() {
+    local name="$1" body="$2"
+    grep -qxF "[$name]" "$OPTIMIA_TOOLS_FILE" 2>/dev/null && return 0
+    printf '\n%s\n' "$body" >> "$OPTIMIA_TOOLS_FILE"
 }
 
 # ── Initialise config dir ──────────────────────────────────────────────────────
 ensure_config() {
     mkdir -p "$OPTIMIA_CONFIG_DIR" "$OPTIMIA_REPOS_DIR"
-    # 700/600: config not readable by other local users (always enforce)
     chmod 700 "$OPTIMIA_CONFIG_DIR" "$OPTIMIA_REPOS_DIR"
     [[ -f "$OPTIMIA_GLOBAL_FILE" ]] || write_default_global
     [[ -f "$OPTIMIA_TOOLS_FILE"  ]] || write_default_tools
     [[ -f "$OPTIMIA_AGENTS_FILE" ]] || write_default_agents
     chmod 600 "$OPTIMIA_GLOBAL_FILE" "$OPTIMIA_TOOLS_FILE" "$OPTIMIA_AGENTS_FILE"
+
+    # ── Migrations (idempotent) ───────────────────────────────────────────────
+
+    # v0.2.0: ask_quick_questions key in global config
+    kv_get "$OPTIMIA_GLOBAL_FILE" "ask_quick_questions" "" \
+        | grep -q . || kv_set "$OPTIMIA_GLOBAL_FILE" "ask_quick_questions" "true"
+
+    # v0.2.0: GitHub Copilot CLI
+    _tools_append_section "copilot" \
+"[copilot]
+command=copilot
+description=GitHub Copilot CLI
+order=6
+enabled=true
+ai_tool=true
+wrapper=
+launch_args=
+install_hint=gh extension install github/gh-copilot"
 }
+
+# Updates a key inside a specific [section] of tools.conf.
+_tools_ini_set() {
+    local section="$1" key="$2" value="$3"
+    local tmp
+    tmp=$(_INISEC="$section" _INIKEY="$key" _INIVAL="$value" awk '
+        BEGIN { sec=ENVIRON["_INISEC"]; k=ENVIRON["_INIKEY"]; v=ENVIRON["_INIVAL"]; in_sec=0 }
+        /^\[/ { cur=$0; gsub(/[\[\] \t]/,"",cur); in_sec=(cur==sec); print; next }
+        in_sec {
+            eq=index($0,"=")
+            if (eq>0) { kk=substr($0,1,eq-1); gsub(/[[:space:]]/,"",kk)
+                if (kk==k) { print k "=" v; next } }
+        }
+        { print }
+    ' "$OPTIMIA_TOOLS_FILE")
+    printf '%s\n' "$tmp" > "$OPTIMIA_TOOLS_FILE"
+}
+
 
 # ── List enabled AI tools sorted by order ─────────────────────────────────────
 list_ai_tools() {
@@ -420,12 +937,11 @@ list_ai_tools() {
 handle_codegraph() {
     local repo_conf="$1"
 
-    # Determine whether codegraph is wanted for this repo
     local use_cg
     use_cg=$(kv_get "$repo_conf" "use_codegraph" "")
     if [[ -z "$use_cg" ]]; then
         echo ""
-        if ask_yn "Enable ${CYAN}CodeGraph${NC} for this repo? (code-intelligence graph)"; then
+        if ask_yn "$_MSG_CG_ENABLE"; then
             kv_set "$repo_conf" "use_codegraph" "true"
             use_cg="true"
         else
@@ -435,7 +951,6 @@ handle_codegraph() {
     fi
     [[ "$use_cg" != "true" ]] && return 0
 
-    # Build the codegraph base command as an array (handles "npx pkg" correctly)
     local cg_str
     cg_str=$(ini_get "$OPTIMIA_TOOLS_FILE" "codegraph" "command" "npx @colbymchenry/codegraph")
     local -a cg=()
@@ -445,68 +960,239 @@ handle_codegraph() {
     initialized=$(kv_get "$repo_conf" "codegraph_initialized" "false")
 
     if [[ "$initialized" != "true" ]]; then
-        log "CodeGraph not yet initialised for this repo."
-        if ask_yn "Initialise now? (builds code index — may take a moment)"; then
-            log "Building code index…"
+        log "$_MSG_CG_NOT_INIT"
+        if ask_yn "$_MSG_CG_INIT_ASK"; then
+            log "$_MSG_CG_INIT_LOG"
             "${cg[@]}" init -i
             kv_set "$repo_conf" "codegraph_initialized" "true"
-            log_ok "CodeGraph initialised."
+            log_ok "$_MSG_CG_INIT_OK"
         fi
     else
         local ask_sync
         ask_sync=$(kv_get "$OPTIMIA_GLOBAL_FILE" "ask_codegraph_update" "true")
         if [[ "$ask_sync" == "true" ]]; then
-            if ask_yn "Sync CodeGraph? (update index with recent changes)" "n"; then
-                log "Syncing code index…"
+            if ask_yn "$_MSG_CG_SYNC_ASK" "n"; then
+                log "$_MSG_CG_SYNC_LOG"
                 "${cg[@]}" sync
-                log_ok "CodeGraph synced."
+                log_ok "$_MSG_CG_SYNC_OK"
             fi
         fi
     fi
+}
+
+# ── Preguntas rápidas ──────────────────────────────────────────────────────────
+#
+# Optional section. Asks 3 quick questions, saves answers to .optimia/, and
+# injects them as context for the AI session:
+#   • Claude Code — via @.optimia/CLAUDE.md include in project CLAUDE.md
+#   • opencode    — via OPTIMIA_SESSION_FILE env var
+#
+ask_quick_questions() {
+    local session_file="$OPTIMIA_LOCAL_DIR/session.md"
+    local claude_ctx="$OPTIMIA_LOCAL_DIR/CLAUDE.md"
+
+    echo ""
+    echo -e "  ${BOLD}${_MSG_QQ_HEADER}${NC} ${DIM}${_MSG_QQ_SKIP}${NC}"
+    echo ""
+
+    local q1 q2_raw q3
+    read -r -p "$(echo -e "  ${BOLD}1.${NC} ${_MSG_QQ_1}  ")" q1
+    read -r -p "$(echo -e "  ${BOLD}2.${NC} ${_MSG_QQ_2} ${DIM}[S/n]${NC} ")" q2_raw
+    read -r -p "$(echo -e "  ${BOLD}3.${NC} ${_MSG_QQ_3}  ")" q3
+
+    local q2
+    case "${q2_raw:-s}" in
+        [Nn]*) q2="$_MSG_QQ_NO" ;;
+        *)     q2="$_MSG_QQ_YES" ;;
+    esac
+
+    local ts
+    ts=$(date '+%Y-%m-%d %H:%M')
+
+    mkdir -p "$OPTIMIA_LOCAL_DIR"
+
+    # Raw session file (human-readable).
+    cat > "$session_file" <<EOF
+# Contexto de sesión — ${ts}
+
+## Objetivo de la sesión
+${q1:-_(no especificado)_}
+
+## Preguntas proactivas del asistente
+${q2}
+
+## Contexto adicional
+${q3:-_(ninguno)_}
+EOF
+
+    # Formatted for Claude Code (@include target).
+    cat > "$claude_ctx" <<EOF
+<!-- optimIA session context — ${ts} -->
+
+## Sesión actual
+
+- **Objetivo**: ${q1:-no especificado}
+- **El asistente hace preguntas sobre sus dudas**: ${q2}
+- **Contexto adicional**: ${q3:-ninguno}
+EOF
+
+    # Claude Code: inject via @include in project CLAUDE.md (read at startup).
+    local project_claude="CLAUDE.md"
+    local include_claude="@${OPTIMIA_LOCAL_DIR}/CLAUDE.md"
+    if [[ ! -f "$project_claude" ]]; then
+        printf '# %s\n\n%s\n' "$(repo_label)" "$include_claude" > "$project_claude"
+        log_ok "$_MSG_QQ_CLAUDE_NEW"
+    elif ! grep -qxF "$include_claude" "$project_claude" 2>/dev/null; then
+        printf '\n%s\n' "$include_claude" >> "$project_claude"
+        log_ok "$_MSG_QQ_CLAUDE_ADD"
+    fi
+
+    # opencode: inject via @include in project AGENTS.md (read at startup).
+    # opencode reads AGENTS.md the same way Claude Code reads CLAUDE.md.
+    local agents_ctx="$OPTIMIA_LOCAL_DIR/AGENTS.md"
+    {
+        cat <<EOF
+<!-- optimIA session context — ${ts} -->
+## Current session
+- **Goal**: ${q1:-unspecified}
+- **Ask proactive questions**: ${q2}
+- **Additional context**: ${q3:-none}
+EOF
+        local sec_md="$OPTIMIA_LOCAL_DIR/security.md"
+        [[ -f "$sec_md" ]] && printf '\n' && cat "$sec_md"
+    } > "$agents_ctx"
+    local project_agents="AGENTS.md"
+    local include_agents="@${OPTIMIA_LOCAL_DIR}/AGENTS.md"
+    if [[ ! -f "$project_agents" ]]; then
+        printf '# %s\n\n%s\n' "$(repo_label)" "$include_agents" > "$project_agents"
+        log_ok "$_MSG_QQ_AGENTS_NEW"
+    elif ! grep -qxF "$include_agents" "$project_agents" 2>/dev/null; then
+        printf '\n%s\n' "$include_agents" >> "$project_agents"
+        log_ok "$_MSG_QQ_AGENTS_ADD"
+    fi
+
+    # Gemini CLI: inject via @include in project GEMINI.md (read at startup,
+    # same mechanism as CLAUDE.md for Claude Code).
+    local gemini_ctx="$OPTIMIA_LOCAL_DIR/GEMINI.md"
+    cp "$agents_ctx" "$gemini_ctx"
+    local project_gemini="GEMINI.md"
+    local include_gemini="@${OPTIMIA_LOCAL_DIR}/GEMINI.md"
+    if [[ ! -f "$project_gemini" ]]; then
+        printf '# %s\n\n%s\n' "$(repo_label)" "$include_gemini" > "$project_gemini"
+    elif ! grep -qxF "$include_gemini" "$project_gemini" 2>/dev/null; then
+        printf '\n%s\n' "$include_gemini" >> "$project_gemini"
+    fi
+
+    # GitHub Copilot: inject into .github/copilot-instructions.md.
+    # This file doesn't support @include, so we maintain a managed block
+    # (<!-- optimIA:session:start --> … <!-- optimIA:session:end -->) that
+    # is updated in place on every launch.
+    local copilot_file=".github/copilot-instructions.md"
+    local cop_start="<!-- optimIA:session:start -->"
+    local cop_end="<!-- optimIA:session:end -->"
+    local cop_body
+    cop_body=$(printf '## Current session (optimIA)\n- **Goal**: %s\n- **Ask proactive questions**: %s\n- **Additional context**: %s' \
+        "${q1:-unspecified}" "$q2" "${q3:-none}")
+    mkdir -p .github
+    if [[ ! -f "$copilot_file" ]]; then
+        printf '%s\n%s\n%s\n' "$cop_start" "$cop_body" "$cop_end" > "$copilot_file"
+        log_ok "$_MSG_QQ_COPILOT_ADD ${DIM}${copilot_file}${NC}"
+    elif grep -qF "$cop_start" "$copilot_file" 2>/dev/null; then
+        local tmp
+        tmp=$(_COP_BODY="$cop_body" _COP_START="$cop_start" _COP_END="$cop_end" awk '
+            BEGIN { start=ENVIRON["_COP_START"]; end=ENVIRON["_COP_END"]; body=ENVIRON["_COP_BODY"]; skip=0 }
+            $0 == start { print; print body; skip=1; next }
+            $0 == end   { skip=0; print; next }
+            skip { next }
+            { print }
+        ' "$copilot_file")
+        printf '%s\n' "$tmp" > "$copilot_file"
+        log_ok "$_MSG_QQ_COPILOT_ADD ${DIM}${copilot_file}${NC}"
+    else
+        printf '\n%s\n%s\n%s\n' "$cop_start" "$cop_body" "$cop_end" >> "$copilot_file"
+        log_ok "$_MSG_QQ_COPILOT_ADD ${DIM}${copilot_file}${NC}"
+    fi
+
+    log_ok "$_MSG_QQ_SAVED ${DIM}${session_file}${NC}"
+
+    # Export path for tools that read env vars (headroom, custom wrappers, etc.)
+    export OPTIMIA_SESSION_FILE="$session_file"
+    echo ""
 }
 
 # ── Launch ─────────────────────────────────────────────────────────────────────
 launch_ai_tool() {
     local tool="$1" repo_conf="$2"
 
-    local ai_cmd wrapper launch_args use_headroom headroom_flags
-    ai_cmd=$(ini_get      "$OPTIMIA_TOOLS_FILE" "$tool" "command"     "$tool")
+    local ai_cmd_str wrapper launch_args use_headroom headroom_flags
+    ai_cmd_str=$(ini_get  "$OPTIMIA_TOOLS_FILE" "$tool" "command"     "$tool")
     wrapper=$(ini_get     "$OPTIMIA_TOOLS_FILE" "$tool" "wrapper"     "")
     launch_args=$(ini_get "$OPTIMIA_TOOLS_FILE" "$tool" "launch_args" "")
     use_headroom=$(kv_get "$repo_conf" "use_headroom" \
                   "$(kv_get "$OPTIMIA_GLOBAL_FILE" "use_headroom" "true")")
-    headroom_flags=$(kv_get "$OPTIMIA_GLOBAL_FILE" "headroom_flags" "--memory")
+    headroom_flags=$(kv_get "$OPTIMIA_GLOBAL_FILE" "headroom_flags" "")
 
-    if ! command -v "$ai_cmd" &>/dev/null; then
-        log_err "Command '${ai_cmd}' not found in PATH — is ${tool} installed?"
-        exit 1
+    # Split multi-word commands ("gh copilot", "npx pkg", …) into an array.
+    local -a ai_parts=()
+    read -ra ai_parts <<< "$ai_cmd_str"
+    local ai_bin="${ai_parts[0]}"
+
+    if ! command -v "$ai_bin" &>/dev/null; then
+        local hint
+        hint=$(ini_get "$OPTIMIA_TOOLS_FILE" "$tool" "install_hint" "$(get_install_hint "$tool")")
+        echo ""
+        log_err "${BOLD}${tool}${NC} is not installed."
+        printf '  Install: %s%s%s\n' "$CYAN" "$hint" "$NC"
+        echo ""
+
+        # Fall back to another installed AI tool if available
+        local -a fallbacks=()
+        local t
+        while IFS= read -r t; do
+            [[ -z "$t" || "$t" == "$tool" ]] && continue
+            local tcmd; tcmd=$(ini_get "$OPTIMIA_TOOLS_FILE" "$t" "command" "$t")
+            local -a tp=(); read -ra tp <<< "$tcmd"
+            command -v "${tp[0]}" &>/dev/null && fallbacks+=("$t")
+        done < <(list_ai_tools)
+
+        if [[ ${#fallbacks[@]} -eq 0 ]]; then
+            log_err "No AI tools installed. Install one and try again."
+            exit 1
+        fi
+
+        local chosen
+        chosen=$(ask_choice "$_MSG_WHICH_AI2" "${fallbacks[@]}")
+        launch_ai_tool "$chosen" "$repo_conf"
+        return
     fi
 
     echo ""
-    log_ok "Launching ${BOLD}${tool}${NC}…"
+    log_ok "$_MSG_LAUNCH ${BOLD}${tool}${NC}…"
     echo ""
 
     local -a cmd=()
     if [[ "$use_headroom" == "true" && "$wrapper" == "headroom" ]]; then
         if ! command -v headroom &>/dev/null; then
-            log_warn "headroom not found — launching ${tool} directly."
-            cmd=("$ai_cmd")
-        elif ! headroom wrap --help 2>&1 | grep -qw "$ai_cmd"; then
-            log_warn "headroom does not support '${ai_cmd}' — launching directly."
-            cmd=("$ai_cmd")
+            log_warn "$_MSG_HEADROOM_MISSING."
+            cmd=("${ai_parts[@]}")
         else
-            read -ra hf <<< "$headroom_flags"
-            if [[ ${#hf[@]} -gt 0 && -n "${hf[0]}" ]]; then
-                cmd=(headroom wrap "${hf[@]}" "$ai_cmd")
+            if [[ -n "$headroom_flags" ]]; then
+                local -a hf=()
+                read -ra hf <<< "$headroom_flags"
+                cmd=(headroom wrap "${hf[@]}" "${ai_parts[@]}")
             else
-                cmd=(headroom wrap "$ai_cmd")
+                cmd=(headroom wrap "${ai_parts[@]}")
             fi
         fi
     else
-        cmd=("$ai_cmd")
+        cmd=("${ai_parts[@]}")
     fi
 
-    [[ -n "$launch_args" ]] && read -ra extra <<< "$launch_args" && cmd+=("${extra[@]}")
+    if [[ -n "$launch_args" ]]; then
+        local -a extra=()
+        read -ra extra <<< "$launch_args"
+        cmd+=("${extra[@]}")
+    fi
 
     exec "${cmd[@]}"
 }
@@ -515,12 +1201,12 @@ launch_ai_tool() {
 configure_new_repo() {
     local repo_conf="$1"
     echo ""
-    echo -e "  ${BOLD}${CYAN}── New repo: $(repo_label) ──${NC}"
+    echo -e "  ${BOLD}${CYAN}${_MSG_NEW_REPO} $(repo_label) ──${NC}"
     echo ""
 
     local -a ai_tools=()
     mapfile -t ai_tools < <(list_ai_tools)
-    ai_tools+=("ask each time")
+    ai_tools+=("$_MSG_ASK_EACH")
 
     local chosen
     if (( ${#ai_tools[@]} == 1 )); then
@@ -530,12 +1216,12 @@ configure_new_repo() {
         chosen=$(ask_choice "Which AI tool for this repo?" "${ai_tools[@]}")
     fi
 
-    [[ "$chosen" == "ask each time" ]] && chosen="ask"
+    [[ "$chosen" == "$_MSG_ASK_EACH" ]] && chosen="ask"
     kv_set "$repo_conf" "ai_tool" "$chosen"
     kv_set "$repo_conf" "use_headroom" \
            "$(kv_get "$OPTIMIA_GLOBAL_FILE" "use_headroom" "true")"
 
-    log_ok "Repo configured → ${repo_conf}"
+    log_ok "$_MSG_REPO_CONF ${repo_conf}"
 }
 
 # ── Subcommands ────────────────────────────────────────────────────────────────
@@ -588,16 +1274,27 @@ cmd_tools() {
             mapfile -t secs < <(ini_sections "$OPTIMIA_TOOLS_FILE")
             local sec
             for sec in "${secs[@]}"; do
-                local enabled desc order ai_tool status tag
-                enabled=$(ini_get "$OPTIMIA_TOOLS_FILE" "$sec" "enabled"     "false")
-                desc=$(ini_get    "$OPTIMIA_TOOLS_FILE" "$sec" "description" "")
-                order=$(ini_get   "$OPTIMIA_TOOLS_FILE" "$sec" "order"       "?")
-                ai_tool=$(ini_get "$OPTIMIA_TOOLS_FILE" "$sec" "ai_tool"     "false")
+                local enabled desc order ai_tool cmd_val check_cmd status ai_tag inst_tag
+                enabled=$(ini_get  "$OPTIMIA_TOOLS_FILE" "$sec" "enabled"     "false")
+                desc=$(ini_get     "$OPTIMIA_TOOLS_FILE" "$sec" "description" "")
+                order=$(ini_get    "$OPTIMIA_TOOLS_FILE" "$sec" "order"       "?")
+                ai_tool=$(ini_get  "$OPTIMIA_TOOLS_FILE" "$sec" "ai_tool"     "false")
+                cmd_val=$(ini_get  "$OPTIMIA_TOOLS_FILE" "$sec" "command"     "")
+
                 [[ "$enabled" == "true" ]] \
                     && status="${GREEN}✓${NC}" || status="${RED}✗${NC}"
                 [[ "$ai_tool" == "true" ]] \
-                    && tag=" ${CYAN}[AI]${NC}" || tag=""
-                echo -e "  [${order}] ${status} ${BOLD}${sec}${NC}${tag} — ${desc}"
+                    && ai_tag=" ${CYAN}[AI]${NC}" || ai_tag=""
+
+                read -r check_cmd _ <<< "$cmd_val"
+                [[ "$check_cmd" == "npx" ]] && check_cmd="npx"
+                if pkg_installed "$check_cmd"; then
+                    inst_tag=""
+                else
+                    inst_tag=" ${YELLOW}[not installed]${NC}"
+                fi
+
+                echo -e "  [${order}] ${status} ${BOLD}${sec}${NC}${ai_tag}${inst_tag} — ${desc}"
             done
             ;;
         edit) "${EDITOR:-${VISUAL:-nano}}" "$OPTIMIA_TOOLS_FILE" ;;
@@ -618,19 +1315,26 @@ ${BOLD}USAGE${NC}
   optimia              Launch AI for current directory
   optimia config       Show / edit global config
   optimia repos        List / forget known repos
-  optimia tools        List / edit tool definitions
+  optimia tools        List / edit tool definitions (shows install status)
   optimia agents       Edit AGENTS.md in \$EDITOR
 
 ${BOLD}OPTIONS${NC}
   -V, --version        Print version
   -h, --help           Print this help
 
-${BOLD}CONFIG${NC}
-  ${OPTIMIA_CONFIG_DIR}/
-    config.conf        Global settings
-    tools.conf         Tool definitions (editable)
-    AGENTS.md          Agent instructions (editable)
-    repos/             Per-repo configs
+${BOLD}GLOBAL CONFIG${NC}  ${OPTIMIA_CONFIG_DIR}/
+  config.conf          Global settings (default_ai, ask_quick_questions…)
+  tools.conf           Tool definitions with install hints
+  AGENTS.md            Agent instructions
+  repos/               Per-repo overrides
+
+${BOLD}PROJECT LOCAL${NC}  .optimia/  (gitignored, new layout)
+  .codegraph/          CodeGraph database
+  session.md           Session context from quick questions
+  CLAUDE.md            Session context formatted for Claude Code
+
+  Note: repos with an existing .codegraph/ at root use it as-is (backwards
+  compatible — no migration needed).
 EOF
 }
 
@@ -646,23 +1350,36 @@ main() {
     esac
 
     ensure_config
-
+    check_platform
     print_banner
 
     local repo_conf
     repo_conf=$(repo_conf_file)
 
-    # First time in this repo: run wizard
+    # 1. Set up .optimia/ layout (or detect legacy .codegraph/ at root).
+    #    In non-git dirs we still create .optimia/ for session context,
+    #    but skip the .codegraph symlink (no codebase to index).
+    ensure_project_dir
+
+    # 2. Check all enabled workflow packages; offer to install any missing.
+    check_workflow_packages
+
+    # 3. First time in this repo: run wizard.
     if ! is_known_repo; then
         configure_new_repo "$repo_conf"
     fi
 
-    # Codegraph (only in git repos)
-    if is_git_repo; then
-        handle_codegraph "$repo_conf"
+    # 4. CodeGraph.
+    handle_codegraph "$repo_conf"
+
+    # 5. Optional quick questions — capture session context.
+    local ask_qq
+    ask_qq=$(kv_get "$OPTIMIA_GLOBAL_FILE" "ask_quick_questions" "true")
+    if [[ "$ask_qq" == "true" ]]; then
+        ask_quick_questions
     fi
 
-    # Determine AI tool
+    # 6. Determine AI tool.
     local ai_tool
     ai_tool=$(kv_get "$repo_conf" "ai_tool" "")
     [[ -z "$ai_tool" ]] && ai_tool=$(kv_get "$OPTIMIA_GLOBAL_FILE" "default_ai" "claude")
@@ -674,6 +1391,7 @@ main() {
         ai_tool=$(ask_choice "Which AI tool?" "${ai_tools[@]}")
     fi
 
+    # 7. Launch.
     launch_ai_tool "$ai_tool" "$repo_conf"
 }
 

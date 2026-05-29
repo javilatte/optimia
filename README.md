@@ -1,11 +1,19 @@
 # optimIA
 
-AI tool orchestrator for developers. Detects your repository, optionally syncs a [CodeGraph](https://github.com/colbymchenry/codegraph) code-intelligence index, and launches your configured AI CLI ([Claude Code](https://claude.ai/code), [opencode](https://opencode.ai), Gemini…) wrapped in [headroom](https://github.com/nicholasgasior/headroom) for 60–90% token savings — all with per-repo preferences.
+[![npm](https://img.shields.io/npm/v/@javilatte/optimia?logo=npm&style=flat-square)](https://www.npmjs.com/package/@javilatte/optimia)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
+[![Node](https://img.shields.io/badge/node-%3E%3D14-brightgreen?style=flat-square&logo=node.js)](https://nodejs.org/)
+
+AI tool orchestrator for developers. Run `optimia` in any project directory and it will:
+
+- Ask which AI tool to use (once per repo, remembered)
+- Build or sync a [CodeGraph](https://github.com/colbymchenry/codegraph) code-intelligence index
+- Capture session context via three quick questions and inject it into the AI tool
+- Write security constraints to `.claude/settings.json` and other tool config files
+- Launch the AI CLI wrapped in [headroom](https://github.com/nicholasgasior/headroom) for 60–90% token savings
 
 ```
 $ optimia
-
-  optimIA  v0.1.0
 
   ── New repo: my-project ──
 
@@ -15,10 +23,18 @@ $ optimia
     3. ask each time
   Choice [1-3]: 1
 
-  Enable CodeGraph for this repo? (code-intelligence graph) [Y/n] y
-  Initialize now? (builds code index) [Y/n] y
+  Enable CodeGraph for this repo? [Y/n] y
   → Building code index…
-  ✓ CodeGraph initialized.
+  ✓ CodeGraph initialised.
+  ✓ Security settings created → .claude/settings.json
+
+  ── Quick questions (optional — press Enter to skip)
+
+  1. What are we implementing this session?  JWT authentication
+  2. Do you want me to ask questions about my doubts? [S/n] s
+  3. Anything I need to keep in mind?  Use Postgres
+
+  ✓ Context saved → .optimia/session.md
   ✓ Launching claude…
 ```
 
@@ -26,25 +42,22 @@ $ optimia
 
 ## Installation
 
-### npm (recommended)
-
 ```bash
 npm install -g @javilatte/optimia
 ```
 
-### npx (no install)
+If you get a permission error (common on Linux with system Node), install to your user prefix instead:
+
+```bash
+npm install -g @javilatte/optimia --prefix ~/.local
+```
+
+Make sure `~/.local/bin` is in your `PATH` (`echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc`).
+
+Or run without installing:
 
 ```bash
 npx @javilatte/optimia
-```
-
-### Manual
-
-```bash
-git clone https://github.com/jagoan/optimia
-cd optimia
-bash install.sh          # installs to /usr/local/bin (sudo if needed)
-# or: PREFIX=~/.local bash install.sh
 ```
 
 ---
@@ -54,11 +67,14 @@ bash install.sh          # installs to /usr/local/bin (sudo if needed)
 | Tool | Required | Purpose |
 |---|---|---|
 | `bash` ≥ 4.0 | yes | runs the script |
-| `git` | yes | repo detection |
-| `claude` | for AI | [Claude Code CLI](https://claude.ai/code) |
-| `opencode` | for AI | [OpenCode CLI](https://opencode.ai) |
-| `headroom` | recommended | token-efficient wrapper |
-| `npx` / Node ≥ 14 | for codegraph | code intelligence |
+| `node` / `npx` ≥ 14 | yes | CodeGraph |
+| `claude` | one AI tool required | [Claude Code](https://claude.ai/code) |
+| `opencode` | one AI tool required | [OpenCode](https://opencode.ai) |
+| `gemini` | one AI tool required | [Gemini CLI](https://github.com/google-gemini/gemini-cli) |
+| `gh copilot` | one AI tool required | [GitHub Copilot CLI](https://github.com/github/gh-copilot) |
+| `headroom` | recommended | token savings wrapper |
+
+You only need one AI tool. optimIA detects which ones are installed.
 
 ---
 
@@ -66,13 +82,13 @@ bash install.sh          # installs to /usr/local/bin (sudo if needed)
 
 ```
 optimia                  Launch AI for the current directory
-optimia tools list       List configured tools (with order and status)
+optimia tools list       List all tools with install status
 optimia tools edit       Edit tools.conf in $EDITOR
-optimia config show      Print global config
+optimia config show      Show global config
 optimia config edit      Edit global config in $EDITOR
-optimia repos list       List all known repositories
-optimia repos show       Show config for the current repo
-optimia repos forget     Remove current repo from known repos (re-runs wizard next time)
+optimia repos list       List known repositories
+optimia repos show       Show config for current repo
+optimia repos forget     Reset current repo (re-runs wizard next time)
 optimia agents           Open AGENTS.md in $EDITOR
 optimia --version        Print version
 optimia --help           Print help
@@ -80,22 +96,99 @@ optimia --help           Print help
 
 ---
 
-## Configuration
+## AI tools
 
-All config lives in `~/.config/optimia/` (respects `$XDG_CONFIG_HOME`).
+By default claude, opencode, and gemini are enabled. GitHub Copilot is available but **disabled by default** since it requires a separate install.
 
-### Global config — `config.conf`
+### GitHub Copilot CLI
 
-```ini
-default_ai=claude          # Fallback AI tool if repo has no preference
-use_headroom=true          # Wrap AI CLI with headroom
-headroom_flags=--memory    # Flags passed to `headroom wrap`
-ask_codegraph_update=true  # Ask to sync codegraph on every launch
+Copilot CLI is **enabled by default**. Install it with:
+
+```bash
+gh extension install github/gh-copilot
 ```
 
-### Tool definitions — `tools.conf`
+If `gh` is installed as a snap (VS Code), that command may fail with a permissions error. In that case, install the standalone binary instead — just run `copilot` once and it will auto-install to `~/.local/bin/`.
 
-Each `[section]` defines one tool. Edit with `optimia tools edit`.
+> headroom wrapping is not applied to Copilot CLI — it uses the GitHub API, not Anthropic/OpenAI.
+
+If an AI tool is selected but not installed, optimIA will show the install command and offer to launch a different installed tool instead.
+
+---
+
+## Session context — Quick questions
+
+On every launch optimIA asks three optional questions (press Enter to skip any):
+
+1. What are we implementing this session?
+2. Do you want the AI to ask proactive questions?
+3. Anything the AI needs to keep in mind?
+
+Answers are injected as startup context for whichever AI tool you launch:
+
+| AI tool | How context is injected |
+|---|---|
+| Claude Code | `@.optimia/CLAUDE.md` appended to project `CLAUDE.md` — read at startup |
+| opencode | `@.optimia/AGENTS.md` appended to project `AGENTS.md` — read at startup |
+| Gemini CLI | `@.optimia/GEMINI.md` appended to project `GEMINI.md` — read at startup |
+| GitHub Copilot | session block in `.github/copilot-instructions.md` — updated each launch |
+| Any tool | `OPTIMIA_SESSION_FILE` env var pointing to `.optimia/session.md` |
+
+Disable: set `ask_quick_questions=false` in `~/.config/optimia/config.conf`
+
+---
+
+## Security settings
+
+On first run in each project, optimIA creates `.claude/settings.json` with a locked-down permission set. This is enforced at the OS level by Claude Code — the AI cannot bypass it.
+
+The same rules are injected as text instructions into `.github/copilot-instructions.md` (Copilot) and `.optimia/AGENTS.md` (opencode), where they are binding instructions rather than hard enforcement.
+
+**Default allow list:** read/edit/write within `src/`, `tests/`, `docs/`; standard git read commands (`status`, `diff`, `log`, `add`); npm scripts and linters.
+
+**Default deny list:** credentials and secrets (`.env*`, `*.pem`, `*.key`, `.ssh/`, `.aws/`, `.gcloud/`, etc.); destructive shell commands (`rm -rf`, `sudo`, `curl`, `wget`, `ssh`); irreversible git operations (`push --force`, `reset --hard`); `npm publish`; `docker`; and **`git commit`** — the AI proposes changes but the human reviews and commits.
+
+Customise by editing `.claude/settings.json` directly. It is never overwritten by optimIA after the first write.
+
+---
+
+## Project-local directory — `.optimia/`
+
+All per-project state lives in `.optimia/` (added to `.gitignore` automatically in git repos):
+
+```
+.optimia/
+├── .codegraph/      CodeGraph SQLite database
+├── security.md      Security rules (included in AI context files)
+├── session.md       Session context — raw answers
+├── CLAUDE.md        Session context for Claude Code
+├── AGENTS.md        Session context for opencode (includes security rules)
+└── GEMINI.md        Session context for Gemini CLI
+```
+
+A symlink `.codegraph → .optimia/.codegraph` is created at the project root so the codegraph CLI and MCP server find the database at the expected path.
+
+**Backwards compatibility:** if a real `.codegraph/` directory already exists at the project root, optimIA uses it as-is and skips the `.optimia/` setup entirely.
+
+---
+
+## Configuration
+
+All global config lives in `~/.config/optimia/` (respects `$XDG_CONFIG_HOME`).
+
+### `config.conf` — global settings
+
+```ini
+default_ai=claude           # Fallback AI if repo has no preference
+use_headroom=true           # Wrap AI CLI with headroom
+headroom_flags=             # Extra flags for headroom wrap
+ask_codegraph_update=true   # Ask to sync CodeGraph on every launch
+ask_quick_questions=true    # Show quick questions at every launch
+```
+
+### `tools.conf` — tool definitions
+
+Edit with `optimia tools edit`. Each `[section]` defines one tool:
 
 ```ini
 [claude]
@@ -103,30 +196,32 @@ command=claude
 description=Claude Code CLI by Anthropic
 order=3
 enabled=true
-ai_tool=true          # appears in AI tool selection menus
+ai_tool=true          # shows in AI selection menu
 wrapper=headroom      # wrap with headroom on launch
-launch_args=          # extra flags appended to the command
+launch_args=          # extra args appended to command
+install_hint=npm install -g @anthropic-ai/claude-code
 ```
 
-**Adding a new AI tool:**
+**To add a custom AI tool:**
 
 ```ini
-[cursor]
-command=cursor
-description=Cursor AI IDE
-order=6
+[aider]
+command=aider
+description=Aider AI coding assistant
+order=8
 enabled=true
 ai_tool=true
 wrapper=headroom
 launch_args=
+install_hint=pip install aider-chat
 ```
 
-**Disabling a tool:** set `enabled=false`.  
-**Reordering:** change `order=`. Tools with lower numbers appear first.
+**To disable a tool:** `enabled=false`  
+**To reorder:** change `order=` (lower = first)
 
 ### Per-repo config — `repos/<hash>.conf`
 
-Generated automatically on first run. One file per repo (keyed by git remote URL hash or directory hash).
+Created automatically on first run. Reset with `optimia repos forget`.
 
 ```ini
 ai_tool=claude
@@ -135,22 +230,6 @@ codegraph_initialized=true
 use_headroom=true
 ```
 
-Reset a repo to re-run the wizard: `optimia repos forget`
-
----
-
-## Agent instructions — `AGENTS.md`
-
-`~/.config/optimia/AGENTS.md` documents the full launch flow and all tools in a format that AI agents can read. Open it with `optimia agents`.
-
-It describes:
-- The exact launch sequence (repo detection → codegraph → AI tool → headroom)
-- All available tools with their commands and when to use them
-- Config file formats
-- How to add new tools
-
-AI agents working in an optimIA-managed repo can read this file to understand what tooling is available and how to use it.
-
 ---
 
 ## Launch flow
@@ -158,22 +237,61 @@ AI agents working in an optimIA-managed repo can read this file to understand wh
 ```
 optimia
   │
-  ├─ 1. Detect repo  (git remote URL → hash, or pwd → hash)
+  ├─ 1. Read config (~/.config/optimia/)
   │
-  ├─ 2. First time?  → wizard
-  │       Select AI tool
-  │       Enable CodeGraph? (y/n)
+  ├─ 2. Set up .optimia/
+  │       Create .optimia/, .codegraph symlink, update .gitignore
+  │       Write .claude/settings.json (security — once only)
+  │       Write .optimia/security.md (once only)
+  │       Skip if legacy .codegraph/ exists at root
   │
-  ├─ 3. CodeGraph  (if enabled)
-  │       Not initialised → ask: npx @colbymchenry/codegraph init -i
-  │       Initialised     → ask: npx @colbymchenry/codegraph sync
+  ├─ 3. Check installed packages
+  │       Any enabled tool missing → show install hint
   │
-  ├─ 4. AI tool selection
-  │       From repo config, or global default, or interactive ask
+  ├─ 4. First time in repo? → wizard
+  │       Pick AI tool · Enable CodeGraph?
   │
-  └─ 5. Launch
-          headroom wrap <headroom_flags> <ai_tool> <launch_args>
-          (direct launch if headroom is disabled or not installed)
+  ├─ 5. CodeGraph (if enabled)
+  │       Not initialised → npx @colbymchenry/codegraph init -i
+  │       Initialised     → offer to sync
+  │
+  ├─ 6. Quick questions (if ask_quick_questions=true)
+  │       Write .optimia/session.md, CLAUDE.md, AGENTS.md, GEMINI.md
+  │       Update .github/copilot-instructions.md session block
+  │
+  ├─ 7. Pick AI tool (from repo config, global default, or ask)
+  │
+  └─ 8. Launch
+          headroom wrap [flags] <ai_tool> [launch_args]
+          (direct if headroom disabled or not installed)
+```
+
+---
+
+## Platform support
+
+| Platform | Status |
+|---|---|
+| Linux | Full support |
+| macOS | Full support |
+| WSL | Full support |
+| Git Bash / Cygwin | Mostly works (warning shown) |
+| Windows CMD / PowerShell | Not supported — requires Bash 4+ |
+
+---
+
+## Advanced optional tools
+
+These are not included in the default tools.conf but can be added manually via `optimia tools edit`:
+
+**[agentmemory](https://github.com/rohitg00/agentmemory)** — Persistent memory MCP server, compatible with Claude Code, opencode, Copilot CLI, Cursor, Gemini CLI, and any MCP client.
+```bash
+pip install agentmemory   # then add [agentmemory] section to tools.conf
+```
+
+**[webwright](https://github.com/unclecode/webwright)** — Browser automation for AI agents. Gives the model a terminal to launch browser sessions and complete web tasks as a single re-runnable Python script.
+```bash
+pip install webwright      # then add [webwright] section to tools.conf
 ```
 
 ---

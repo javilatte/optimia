@@ -3,6 +3,9 @@
 [![npm](https://img.shields.io/npm/v/@javilatte/optimia?logo=npm&style=flat-square)](https://www.npmjs.com/package/@javilatte/optimia)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 [![Node](https://img.shields.io/badge/node-%3E%3D14-brightgreen?style=flat-square&logo=node.js)](https://nodejs.org/)
+[![Linux](https://img.shields.io/badge/Linux-tested-brightgreen?style=flat-square&logo=linux)](https://github.com/)
+[![macOS](https://img.shields.io/badge/macOS-untested%20%2F%20WIP-yellow?style=flat-square&logo=apple)](https://www.apple.com/macos)
+[![Windows](https://img.shields.io/badge/Windows-untested%20%2F%20WIP-yellow?style=flat-square&logo=windows)](https://www.microsoft.com/windows)
 
 AI tool orchestrator for developers. Run `optimia` in any project directory and it will:
 
@@ -270,13 +273,13 @@ optimia
 
 ## Platform support
 
+> **Currently only Linux is tested.** macOS and Windows are not tested yet.
+
 | Platform | Status |
 |---|---|
-| Linux | Full support |
-| macOS | Full support |
-| WSL | Full support |
-| Git Bash / Cygwin | Mostly works (warning shown) |
-| Windows CMD / PowerShell | Not supported — requires Bash 4+ |
+| Linux | Tested |
+| macOS | Untested |
+| Windows | Untested |
 
 ---
 

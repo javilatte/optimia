@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-OPTIMIA_VERSION="0.2.1"
+OPTIMIA_VERSION="0.2.2"
 OPTIMIA_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/optimia"
 OPTIMIA_REPOS_DIR="$OPTIMIA_CONFIG_DIR/repos"
 OPTIMIA_TOOLS_FILE="$OPTIMIA_CONFIG_DIR/tools.conf"
@@ -68,6 +68,13 @@ if [[ "$_L" =~ ^es([_\.].+)?$ ]]; then
     _MSG_CG_SYNC_ASK="¿Sincronizar CodeGraph? (actualizar índice con cambios recientes)"
     _MSG_CG_SYNC_LOG="Sincronizando índice de código…"
     _MSG_CG_SYNC_OK="CodeGraph sincronizado."
+    _MSG_WF_ASK="¿Instalar herramientas de workflow (system prompt + skill plan-optimizer)?"
+    _MSG_WF_HDR="── Herramientas de workflow"
+    _MSG_WF_PROMPT_OK="System prompt instalado →"
+    _MSG_WF_SKILL_OK="Skill plan-optimizer instalada →"
+    _MSG_WF_PROMPT_SKIP="System prompt ya existía, conservado."
+    _MSG_WF_SKILL_SKIP="Skill plan-optimizer ya existía, conservada."
+    _MSG_WF_PROMPT_REF="Referencia al system prompt añadida a"
 else
     _MSG_SUBTITLE="AI tool orchestrator"
     _MSG_PKGS_MISSING="Some workflow tools are not installed:"
@@ -110,6 +117,13 @@ else
     _MSG_CG_SYNC_ASK="Sync CodeGraph? (update index with recent changes)"
     _MSG_CG_SYNC_LOG="Syncing code index…"
     _MSG_CG_SYNC_OK="CodeGraph synced."
+    _MSG_WF_ASK="Install workflow tools (system prompt + plan-optimizer skill)?"
+    _MSG_WF_HDR="── Workflow tools"
+    _MSG_WF_PROMPT_OK="System prompt installed →"
+    _MSG_WF_SKILL_OK="plan-optimizer skill installed →"
+    _MSG_WF_PROMPT_SKIP="System prompt already existed, kept."
+    _MSG_WF_SKILL_SKIP="plan-optimizer skill already existed, kept."
+    _MSG_WF_PROMPT_REF="System prompt reference added to"
 fi
 
 # ── Platform check ─────────────────────────────────────────────────────────────
@@ -274,10 +288,14 @@ ini_sections() {
 ask_yn() {
     local prompt="$1" default="${2:-y}"
     local yn ind
-    [[ "$default" == "y" ]] && ind="[Y/n]" || ind="[y/N]"
+    # Default can be y/Y (English yes) or s/S (Spanish sí).
+    case "$default" in
+        [yYsS]) ind="[Y/n]" ;;
+        *)      ind="[y/N]" ;;
+    esac
     read -r -p "$(echo -e "  ${BOLD}${prompt}${NC} ${DIM}${ind}${NC} ")" yn
     yn="${yn:-$default}"
-    [[ "$yn" =~ ^[Yy] ]]
+    [[ "$yn" =~ ^[YySs] ]]
 }
 
 ask_choice() {
@@ -452,6 +470,419 @@ EOF
         sec_body=$(cat "$OPTIMIA_LOCAL_DIR/security.md" 2>/dev/null || true)
         printf '\n%s\n%s\n%s\n' "$sec_start" "$sec_body" "$sec_end" >> "$cop_file"
     fi
+}
+
+# Writes the workflow system-prompt boilerplate into .optimia/system-prompt.md
+# unless it already exists. The content is verbatim from the optimIA template;
+# the project name in the title is substituted with the actual repo label.
+_write_workflow_system_prompt() {
+    local f="$OPTIMIA_LOCAL_DIR/system-prompt.md"
+    [[ -f "$f" ]] && { log "$_MSG_WF_PROMPT_SKIP ${DIM}${f}${NC}"; return 1; }
+    mkdir -p "$OPTIMIA_LOCAL_DIR"
+    cat > "$f" <<'PROMPT'
+# CLAUDE.md — <PROJECT>
+
+> System prompt para trabajo de ingeniería informática en este proyecto.
+> Cargado al inicio de cada sesión. Si una instrucción entra en conflicto con `.optimia/security.md`, gana security.
+
+## 0. Arranque de sesión (primeros 30 segundos)
+
+1. Leer este archivo y `.optimia/AGENTS.md` (security constraints).
+2. Comprobar herramientas de TODO disponibles: `todowrite`, `TodoWrite`, `EnterPlanMode`, `Task` (subagents), `Skill`.
+3. Si existe `tasks/<proyecto>-<YYYY-MM-DD>.md` o `todos.json`, leer para retomar contexto.
+4. Anunciar en una línea: objetivo detectado, herramientas detectadas, ruta del TODO.
+
+## 1. Reglas de oro (innegociables)
+
+1. **No commit** sin que el usuario lo pida explícitamente. Proponer diff, dejar que commitée.
+2. **No leer/escribir** secretos (ver `.optimia/AGENTS.md`). Si aparecen, parar y avisar.
+3. **No inventar URLs** ni nombres de paquetes. Si dudas, decir "no lo sé" y proponer cómo averiguarlo.
+4. **Verificar antes de "done"**: ejecutar/tests/logs que prueben que funciona. Sin eso, no marcar completo.
+5. **Cambios mínimos**: tocar solo lo necesario para el objetivo. Sin refactors oportunistas.
+6. **Prohibido usar emoticonos** (ni en respuestas al usuario, ni en archivos, ni en commits, ni en docs). Solo texto plano y, donde aporten, símbolos ASCII (`*`, `-`, `>`, `→`, etc.).
+
+## 2. Sandbox de archivos
+
+- **Salida a servidor** (configs, scripts systemd, nginx, cron, crontab, fragments de shell, dumps SQL, .service, tokens de ejemplo, comandos listos para pegar): **`/tmp/`** con nombre descriptivo (`/tmp/<PROJECT>-nginx-2026-06-22.conf`).
+  - Mostrar al usuario la ruta absoluta y el contenido inline.
+  - Nunca escribir estos archivos en el repo a menos que el usuario lo pida.
+- **Trabajo de proyecto** (código, docs, tests): en el repo, en su carpeta natural.
+- **Borradores/artefactos intermedios** que no van al repo ni a servidor: `/tmp/opencode/`.
+
+## 3. Sistema de TODO (evaluar → elegir → ejecutar)
+
+### Paso 1 — Evaluar herramientas disponibles
+Comprobar en este orden:
+
+| Herramienta | Cuándo usarla |
+|---|---|
+| `todowrite` tool | Sesión interactiva con un solo agente, <20 items |
+| `Task` (subagents) | >3 subtareas paralelas o investigación pesada |
+| `Skill` plan-optimizer | Plan complejo con criterios de éxito (ver §5) |
+| Archivo `tasks/<proyecto>-<YYYY-MM-DD>.md` | Sin tool de TODO, o sesión larga multi-día |
+| `todos.json` (ya existe en este proyecto) | Persistencia entre sesiones; sincronizar al cerrar |
+
+### Paso 2 — Si NO hay tool de TODO nativa
+Crear `tasks/<proyecto-slug>-<YYYY-MM-DD>.md` con este esqueleto:
+
+```markdown
+# <Proyecto> — <YYYY-MM-DD>
+
+## Objetivo
+<1 frase medible>
+
+## Pasos
+- [ ] <paso 1>
+- [ ] <paso 2>
+
+## Progreso
+### <HH:MM> — <paso 1>
+- <qué hice, qué encontré>
+
+## Lecciones
+- <corrección recibida> → <regla para no repetirla>
+
+## Review final
+- <qué funcionó, qué no>
+```
+
+Reglas de mantenimiento:
+- Marcar `[x]` al completar (no borrar, tachar).
+- Añadir entrada en **Progreso** con timestamp tras cada paso.
+- Si el usuario corrige, append inmediato en **Lecciones** con la regla extraída.
+
+### Paso 3 — Si HAY tool (`todowrite`)
+- Crear items al planificar, NO después de ejecutar.
+- Mantener un item `in_progress` como máximo.
+- Sincronizar con `tasks/<proyecto>-<YYYY-MM-DD>.md` si la sesión puede continuar otro día.
+
+## 4. Workflow orchestration
+
+### 4.1 Plan mode por defecto
+- Cualquier tarea **no trivial** (3+ pasos, decisión arquitectónica, refactor, bug sin causa clara): entrar en plan mode primero.
+- Si algo va mal durante la ejecución: **STOP, re-planificar**, no empujar.
+- Plan mode también para verificación, no solo construcción.
+- Spec detallada upfront reduce ambigüedad: archivos a tocar, criterios de done, riesgos.
+
+### 4.2 Estrategia de subagents
+- **Usar liberalmente** para mantener el contexto del agente principal limpio.
+- Offload a subagents: investigación, exploración de código, análisis paralelo, lectura de archivos grandes.
+- Para problemas complejos: más computación vía subagents en paralelo.
+- **Una tarea por subagent** — ejecución enfocada, no cajón de sastre.
+
+### 4.3 Self-improvement loop
+- **Tras CUALQUIER corrección del usuario**: actualizar `tasks/<proyecto>-<fecha>.md` § Lecciones con el patrón.
+- Formular la regla en imperativo negativo o positivo claro: "Nunca X sin Y", "Siempre hacer Z antes de W".
+- Iterar sobre las lecciones hasta que la tasa de error baje.
+- **Revisar `tasks/lessons.md` al iniciar sesión** (si existe) para errores ya conocidos.
+
+### 4.4 Verification before done
+- Nunca marcar completo sin demostrar que funciona:
+  - Ejecutar el código/tests reales.
+  - Diff de comportamiento entre main y cambio cuando aplique.
+  - Log/error/output como evidencia.
+- Pregunta de control: *"¿Un staff engineer aprobaría este PR así?"*
+- Si la respuesta es no, no marcar done.
+
+### 4.5 Demand elegance (con balance)
+- Para cambios no triviales: pausar y preguntar *"¿hay una forma más elegante?"*
+- Si el fix se siente hacky: *"Sabiendo todo lo que sé ahora, implementa la solución elegante."*
+- **Saltar esto para fixes simples y obvios** — no sobre-ingeniar.
+- Auto-cuestionar el trabajo antes de presentar.
+
+### 4.6 Autonomous bug fixing
+- Ante un bug: arreglarlo. No pedir instrucciones paso a paso.
+- Apuntar a logs, errores, tests fallidos → resolver.
+- **Cero context switching** del usuario.
+- Si hay tests de CI fallando, arreglarlos sin que te digan cómo.
+
+## 5. Plan-optimizer para multi-agente (skill)
+
+**Cuándo cargar la skill `plan-optimizer`** (cualquiera de estas):
+- El plan involucra **2+ subagents** en paralelo.
+- El usuario pide "el mejor plan posible", "endurece esto", "qué falta", "bulletproof".
+- El plan tiene criterios de éxito medibles que importan (coste de plan débil es real).
+- El output va a producción o a una decisión cara de revertir.
+
+**Cuándo NO cargarlo**:
+- Tarea trivial (1-2 pasos).
+- El usuario quiere un primer borrador rápido — ofrecer el loop, no imponerlo.
+- Ya hay un plan acordado y solo se ejecuta.
+
+**Flujo recomendado**:
+1. Cargar skill con `skill(name: "plan-optimizer")`.
+2. Construir rúbrica con pesos adaptados al dominio **antes** de planificar.
+3. Iterar hill-climb hasta plateau (K=3, margin=2).
+4. Si plateau, una ronda best-of-N (N=3) para escapar del óptimo local.
+5. Entregar: plan final + score + trayectoria + 2-3 mejoras clave del loop.
+
+## 6. Task management (flujo canónico)
+
+1. **Plan first**: escribir plan en `tasks/<proyecto>-<fecha>.md` con items checkables.
+2. **Verify plan**: check-in con el usuario antes de implementar (1-2 frases, no monólogo).
+3. **Track progress**: marcar `[x]` o actualizar `todowrite` en cada paso.
+4. **Explain changes**: resumen de alto nivel tras cada paso significativo.
+5. **Document results**: añadir sección **Review final** al cerrar.
+6. **Capture lessons**: actualizar **Lecciones** tras cada corrección.
+
+## 7. Core principles
+
+- **Simplicity first**: cada cambio tan simple como sea posible. Impacto mínimo en código.
+- **No laziness**: encontrar la causa raíz. Cero fixes temporales. Estándar de senior.
+- **Minimal impact**: solo tocar lo necesario. Evitar introducir bugs colaterales.
+- **Senior mindset**: si te dan un bug, lo arreglas; si te dan una arquitectura, la cuestionas; si te dan un hack, propones la versión elegante.
+
+## 8. Anti-patrones (no hacer)
+
+- ❌ Commit sin que el usuario lo pida.
+- ❌ Escribir archivos de deploy/configuración dentro del repo cuando son para el servidor → usar `/tmp/`.
+- ❌ Marcar items `[x]` sin evidencia de verificación.
+- ❌ Reescribir código que no es del alcance (scope creep).
+- ❌ Pedir confirmación para detalles triviales (nombre de variable, indentación).
+- ❌ Tocar `.env*`, `*.pem`, `.ssh/`, etc. (ver `.optimia/AGENTS.md`).
+- ❌ Inventar nombres de paquetes o URLs no verificadas.
+- ❌ Hacer un "fix" con un `try/catch` que oculta el error.
+- ❌ Empujar cuando algo va mal — re-planificar.
+- ❌ Reescribir prosa/estructura del CLAUDE.md sin motivo solo porque "se ve mejor".
+- ❌ Usar emoticonos de cualquier tipo (emojis unicode, kaomoji, etc.) en respuestas, código, docs o commits.
+
+## 9. Comandos de uso frecuente (este proyecto)
+
+- `npm run dev` — desarrollo.
+- `npm test` — tests (si existe script).
+- `rtk <comando>` — proxy token-optimizado para `git`, `ls`, `grep`, etc. (ver `~/.claude/RTK.md`).
+- `node server.js` — arrancar el servidor.
+
+## 10. Cuando el usuario corrige algo
+
+Plantilla de entrada en `tasks/<proyecto>-<fecha>.md` § Lecciones:
+
+```markdown
+- <YYYY-MM-DD HH:MM> — <qué dijo el usuario>: <regla extraída en imperativo>
+  - Síntoma: <qué pasó>
+  - Causa: <por qué pasó>
+  - Prevención: <qué hacer antes la próxima vez>
+```
+
+Reglas extraídas útiles de este proyecto se promueven a `tasks/lessons.md` (raíz del repo) si son recurrentes o transferibles a otros proyectos.
+
+---
+
+*Si una sección entra en conflicto con la realidad del entorno, la realidad gana; actualizar este archivo.*
+PROMPT
+    sed -i "s|<PROJECT>|$(repo_label)|g" "$f"
+    log_ok "$_MSG_WF_PROMPT_OK ${DIM}${f}${NC}"
+    return 0
+}
+
+# Installs the plan-optimizer skill into .claude/skills/plan-optimizer/SKILL.md
+# unless it already exists. Skills are the Claude Code mechanism for bundling
+# specialised instructions that the agent can opt in to with `Skill`.
+_install_plan_optimizer_skill() {
+    local skill_dir=".claude/skills/plan-optimizer"
+    local skill_file="$skill_dir/SKILL.md"
+    [[ -f "$skill_file" ]] && { log "$_MSG_WF_SKILL_SKIP ${DIM}${skill_file}${NC}"; return 1; }
+    mkdir -p "$skill_dir"
+    cat > "$skill_file" <<'SKILL'
+---
+name: plan-optimizer
+description: >-
+  Iteratively optimize a plan by scoring it against a rubric, critiquing it, and
+  rewriting it until the score plateaus. Use this skill whenever the user wants
+  to refine, improve, harden, stress-test, or "make the best possible" version
+  of a plan of any kind: project plans, execution/rollout plans, code
+  implementation plans, research plans, strategy memos, study plans, training
+  plans, go-to-market plans, or proposals. Trigger it when the user says things
+  like "improve this plan", "iterate on this until it can't get better", "score
+  and refine my approach", "find the holes in this plan", "make this plan
+  bulletproof", or describes wanting an automatic improve-and-score loop. Also
+  use it proactively when the user shares a draft plan and asks "is this good?"
+  or "what would make this better?" The loop produces a measurably stronger
+  plan than a single critique pass.
+---
+
+# Plan Optimizer
+
+This skill turns plan-writing into a search problem. Instead of producing one
+plan and hoping it's good, you generate a plan, score it numerically against
+an explicit rubric, critique it, rewrite it to fix the weaknesses, and
+repeat, keeping the best version seen so far, until the score stops improving.
+That plateau is your signal that further iteration is just noise, and you stop.
+
+The reason this works is that scoring and rewriting are *separate* acts.
+Generating a plan and judging a plan use different cognitive muscles; forcing an
+explicit critique between revisions converts blind rewriting into directed
+search that climbs toward a target rather than drifting sideways.
+
+## When to use this
+
+Use it whenever there's a plan that should be as good as it can reasonably get
+and the cost of a weak plan is real. If the user just wants a quick first draft,
+don't impose the loop, offer it. If they want the *best* plan, run the
+loop.
+
+## The loop at a glance
+
+```
+plan        = generate the initial plan from the task
+best        = plan
+best_score  = score(plan)            # 0-100, against the rubric
+history     = [best_score]
+
+repeat:
+    candidate = improve(best)        # critique -> targeted rewrite
+    s         = score(candidate)
+    if s > best_score + MARGIN:      # require a real margin, not noise
+        best, best_score = candidate, s
+    history.append(best_score)
+until plateau(history)               # no real gain over the last K rounds
+return best, history
+```
+
+Run this in your head / in the conversation, not as code. The "functions" are
+reasoning steps you perform. Keep all intermediate plans and scores so you can
+show the trajectory at the end.
+
+## Step 1: Build the rubric first
+
+Before writing any plan, write the rubric. The rubric is the ceiling: the
+loop can only climb as high as the rubric lets it perceive quality, so a vague
+rubric gives you a low, noisy ceiling. Spend real effort here.
+
+A good rubric is domain-adapted, weighted, and as objective as possible. Derive
+the criteria from what would actually make *this* plan succeed or fail, not from
+a generic checklist. Most strong plans, whatever the domain, are graded on some
+mix of:
+
+- Goal clarity: is the objective and definition of "done" unambiguous and measurable?
+- Completeness: are the necessary steps/workstreams present, with nothing load-bearing missing?
+- Sequencing & dependencies: is the order right; are prerequisites identified?
+- Feasibility & resourcing: is it realistic given time, people, budget, constraints?
+- Risks & mitigations: are the real failure modes named, with contingencies?
+- Success metrics: are there concrete signals that tell you it's working?
+- Specificity: is it actionable (owners, dates, concrete first step) rather than vague aspiration?
+
+Assign each criterion a weight that reflects its importance for this task, and
+state, briefly, what a low/medium/high score looks like for each. Prefer
+criteria you can check against something objective (does the plan name a first
+action? does every phase have an exit condition?) over purely subjective taste.
+Objective criteria resist gaming.
+
+Show the rubric to the user before you start iterating if there's any ambiguity
+about what "good" means for them; their priorities (speed vs. thoroughness,
+risk-aversion vs. ambition) should shape the weights.
+
+## Step 2: Generate the initial plan
+
+Write a genuine first attempt at the plan that addresses the task. Don't
+sandbag it to make the loop look impressive: a strong starting point reaches a
+higher final ceiling. Then score it against the rubric (Step 3).
+
+## Step 3: Score
+
+Score the current plan from 0 to 100. Do this as a deliberate, separate pass:
+go criterion by criterion, assign each a sub-score, note *why*, then combine by
+the weights. Always write a one-line rationale per criterion. The rationale is
+what feeds the next critique, and it's what keeps scoring honest rather than a
+gut number.
+
+Two guards against noisy scoring:
+
+- Require a margin to accept. Only replace the current best if the new score
+  beats it by a meaningful margin (e.g. +2 on a 100 scale), not by a fraction.
+  Scoring has noise; without a margin you'll "improve" into a worse plan.
+- Re-anchor occasionally. Every few rounds, re-read the *original* rubric
+  fresh rather than drifting toward whatever the latest plan happens to do well.
+  This catches reward-hacking, where revisions start optimizing for a score the
+  rubric didn't really intend.
+
+## Step 4: Improve (critique, then rewrite)
+
+This is the engine. Do *not* just say "make it better" and rewrite, that
+produces lateral drift. Instead, in two explicit moves:
+
+1. *Critique.* Against the rubric, list the specific weaknesses of the current
+   best plan, ordered by how much they cost in score. Be concrete: "no rollback
+   step for the migration", not "could be more robust". Name the lowest-scoring
+   criteria and why they're low.
+2. *Rewrite.* Produce a new full version of the plan that directly fixes the
+   critique's top items, while preserving what already scored well. Don't
+   regress strengths to chase a weakness.
+
+### Two search strategies: pick one, switch when stuck
+
+- Hill-climb (default). One critique->rewrite candidate per round. Fast and
+  cheap. Use this unless told otherwise. Its weakness is local optima, small
+  fixes that can't reach a fundamentally better structure.
+- Best-of-N. When hill-climbing stalls (see plateau, Step 5) but you suspect
+  the plan needs a structural rethink, generate N genuinely different
+  candidates in one round (not minor variants, but different framings or
+  architectures of the plan), score all N, and keep the best. This widens the
+  search and is how you break through a ceiling that incremental edits can't.
+  N=3 is a sensible default; more candidates cost more.
+
+A good automatic policy: hill-climb until you hit a plateau, then do one
+best-of-N round to try to escape the local optimum. If best-of-N also fails to
+beat the ceiling by the margin, you've genuinely converged. Stop.
+
+If the user has access to a stronger model than the one running the loop, note
+that running the *improve* and *score* steps on a stronger model is the single
+biggest lever. A stronger model proposes structurally better rewrites and also
+perceives flaws a weaker scorer misses, which raises the ceiling itself.
+
+## Step 5: Stop on plateau
+
+Track the best score over a sliding window of the last K rounds (K=3 is
+reasonable). Stop when the best score has not improved by more than the margin
+over the last K rounds. That's the "iterations have become noise" point.
+Also stop if you hit a sensible max rounds (e.g. 6-8) regardless, so the loop
+always terminates. Before declaring convergence on a hill-climb plateau, try the
+one best-of-N escape round described above.
+
+## Step 6: Output
+
+Return:
+
+1. The best plan, clean and ready to use. This is the deliverable, lead with it.
+2. Its final score with the per-criterion breakdown.
+3. The score trajectory (e.g. `62 -> 74 -> 81 -> 83 -> 83`) so the user sees the
+   climb and the plateau.
+4. A short note on what the loop changed: the 2-3 biggest improvements made
+   from first draft to final, so the user understands *why* it's better.
+
+Keep the process visible but concise. The user cares most about the final plan;
+the trajectory and rationale are evidence that it's been genuinely hardened, not
+just reformatted.
+
+## Pitfalls to watch
+
+- Reward hacking the rubric. If scores climb but the plan doesn't feel
+  better, the rewrites are gaming the metric. Re-anchor on the original intent,
+  and prefer objective criteria.
+- A weak rubric capping everything. If you plateau low, suspect the rubric
+  before the plan. A ceiling that feels too low often means the rubric can't see
+  the dimension that matters, so add or reweight a criterion.
+- Reformatting masquerading as improvement. Bigger/prettier != better.
+  Improvements should change substance (a missing risk, a fixed dependency), not
+  just structure. The margin guard helps; so does an honest critique.
+- Never stopping. Respect the plateau and the max-rounds cap. Past the
+  plateau you're spending effort to move noise around.
+SKILL
+    log_ok "$_MSG_WF_SKILL_OK ${DIM}${skill_file}${NC}"
+    return 0
+}
+
+# Top-level orchestrator for the workflow-tools bootstrap. Installs both
+# assets, then updates the per-repo config so the wizard won't re-ask.
+install_workflow_tools() {
+    local repo_conf="$1"
+    echo ""
+    echo -e "  ${BOLD}${CYAN}${_MSG_WF_HDR}${NC}"
+    echo ""
+    _write_workflow_system_prompt
+    _install_plan_optimizer_skill
+    kv_set "$repo_conf" "workflow_tools_installed" "true"
+    echo ""
 }
 
 # Creates .optimia/ and a root-level .codegraph symlink for tool/MCP compat.
@@ -861,6 +1292,23 @@ wrapper=headroom
 launch_args=
 install_hint=npm install -g mytool
 ```
+
+---
+
+## Workflow tools (system prompt + skills)
+
+The first-time wizard offers an opt-in to install a workflow system prompt and
+the `plan-optimizer` skill into the project. Both are written once and never
+overwritten — edit them freely afterwards.
+
+| Asset | Path | Purpose |
+|---|---|---|
+| System prompt | `.optimia/system-prompt.md` | Workflow rules: TODO system, plan mode, subagents, verification, anti-patterns. Referenced from `CLAUDE.md`, `AGENTS.md` and `GEMINI.md` via `@include`. |
+| `plan-optimizer` skill | `.claude/skills/plan-optimizer/SKILL.md` | Hill-climbing plan refinement loop — score / critique / rewrite until plateau. Load with `Skill plan-optimizer` when the user wants the best possible plan. |
+
+State is tracked in `repos/<hash>.conf` as `workflow_tools_installed=true|skipped`.
+Re-run the wizard with `optimia repos forget` to be asked again.
+
 AGENTS
 }
 
@@ -1117,6 +1565,21 @@ EOF
 
     # Export path for tools that read env vars (headroom, custom wrappers, etc.)
     export OPTIMIA_SESSION_FILE="$session_file"
+
+    # If the workflow system-prompt is installed, add a @include to each
+    # project root context file so the AI sees it at startup. Idempotent.
+    local wf_prompt="$OPTIMIA_LOCAL_DIR/system-prompt.md"
+    if [[ -f "$wf_prompt" ]]; then
+        local wf_include="@${wf_prompt}"
+        local f
+        for f in CLAUDE.md AGENTS.md GEMINI.md; do
+            if [[ -f "$f" ]] && ! grep -qxF "$wf_include" "$f" 2>/dev/null; then
+                printf '\n%s\n' "$wf_include" >> "$f"
+                log_ok "$_MSG_WF_PROMPT_REF ${DIM}${f}${NC}"
+            fi
+        done
+    fi
+
     echo ""
 }
 
@@ -1222,6 +1685,17 @@ configure_new_repo() {
            "$(kv_get "$OPTIMIA_GLOBAL_FILE" "use_headroom" "true")"
 
     log_ok "$_MSG_REPO_CONF ${repo_conf}"
+
+    # Workflow tools (system prompt + plan-optimizer skill).
+    # Asked exactly once per repo. "yes" installs + sets true (never asked again);
+    # "no" sets skipped (also never asked again). To re-ask, use `optimia repos forget`.
+    if [[ -z "$(kv_get "$repo_conf" "workflow_tools_installed" "")" ]]; then
+        if ask_yn "$_MSG_WF_ASK" "s"; then
+            install_workflow_tools "$repo_conf"
+        else
+            kv_set "$repo_conf" "workflow_tools_installed" "skipped"
+        fi
+    fi
 }
 
 # ── Subcommands ────────────────────────────────────────────────────────────────

@@ -164,6 +164,7 @@ All per-project state lives in `.optimia/` (added to `.gitignore` automatically 
 ├── .codegraph/      CodeGraph SQLite database
 ├── security.md      Security rules (included in AI context files)
 ├── session.md       Session context — raw answers
+├── system-prompt.md Workflow system prompt (optional, opt-in)
 ├── CLAUDE.md        Session context for Claude Code
 ├── AGENTS.md        Session context for opencode (includes security rules)
 └── GEMINI.md        Session context for Gemini CLI
@@ -172,6 +173,20 @@ All per-project state lives in `.optimia/` (added to `.gitignore` automatically 
 A symlink `.codegraph → .optimia/.codegraph` is created at the project root so the codegraph CLI and MCP server find the database at the expected path.
 
 **Backwards compatibility:** if a real `.codegraph/` directory already exists at the project root, optimIA uses it as-is and skips the `.optimia/` setup entirely.
+
+---
+
+## Workflow tools (opt-in)
+
+The first-time wizard offers an opt-in to install a **workflow system prompt** and the **`plan-optimizer` skill** into the project. Both are written once and never overwritten — edit them freely afterwards.
+
+| Asset | Path | Purpose |
+|---|---|---|
+| System prompt | `.optimia/system-prompt.md` | Workflow rules: TODO system, plan mode, subagents, verification, anti-patterns. Referenced from `CLAUDE.md`, `AGENTS.md` and `GEMINI.md` via `@include`. |
+| `plan-optimizer` skill | `.claude/skills/plan-optimizer/SKILL.md` | Hill-climbing plan refinement — score / critique / rewrite until plateau. Load with `Skill plan-optimizer` when the user wants the best possible plan. |
+
+State is tracked in `repos/<hash>.conf` as `workflow_tools_installed=true|skipped`.
+Re-run the wizard with `optimia repos forget` to be asked again.
 
 ---
 
@@ -252,7 +267,7 @@ optimia
   │       Any enabled tool missing → show install hint
   │
   ├─ 4. First time in repo? → wizard
-  │       Pick AI tool · Enable CodeGraph?
+  │       Pick AI tool · Enable CodeGraph? · Install workflow tools?
   │
   ├─ 5. CodeGraph (if enabled)
   │       Not initialised → npx @colbymchenry/codegraph init -i

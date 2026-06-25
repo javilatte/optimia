@@ -145,19 +145,29 @@ check_platform() {
 
 # ── Safe installer ─────────────────────────────────────────────────────────────
 # Runs an install command only if its first word is on the allowlist.
-# Uses array exec (not eval) so shell metacharacters in the command string
-# cannot be injected even if tools.conf is tampered with.
+# Validates that the first command in a hint is a known package manager, then
+# runs it. For compound hints (&&), the first command is validated and the rest
+# runs via bash -c. For npm, EACCES is detected and retried with sudo.
 safe_install() {
+    local hint="$1"
     local -a parts=()
-    read -ra parts <<< "$1"
+    read -ra parts <<< "$hint"
     local first="${parts[0]:-}"
     case "$first" in
         npm|npx|pip|pip3|pipx|apt|apt-get|brew|yarn|pnpm) ;;
         *)
             log_warn "Unrecognised installer '$first' — skipping auto-install."
-            log_warn "Run manually if you trust it: $1"
+            log_warn "Run manually if you trust it: $hint"
             return 1 ;;
     esac
+
+    # Compound command (&&): first part already validated; run the full hint
+    # via bash -c so shell operators work correctly.
+    if [[ "$hint" == *"&&"* ]]; then
+        bash -c "$hint"
+        return $?
+    fi
+
     # For pip/pip3: detect PEP 668 (Ubuntu externally-managed) and bail out
     # rather than adding --break-system-packages automatically — that can
     # silently break system tools. Let the user decide.
@@ -176,11 +186,28 @@ safe_install() {
         fi
         return 0
     fi
+
     # pipx fallback for Ubuntu externally-managed environments
     if [[ "$first" == "pipx" ]] && ! command -v pipx &>/dev/null; then
         log_warn "$_MSG_PIPX_FALLBACK"
         parts=(pip install --user "${parts[@]:2}")
     fi
+
+    # For npm -g: detect EACCES (global prefix owned by root) and retry with sudo.
+    if [[ "$first" == "npm" && "${parts[*]}" == *" -g"* ]]; then
+        local out
+        if ! out=$("${parts[@]}" 2>&1); then
+            printf '%s\n' "$out" >&2
+            if printf '%s' "$out" | grep -q 'EACCES'; then
+                log_warn "npm permission error — retrying with sudo…"
+                sudo "${parts[@]}"
+                return $?
+            fi
+            return 1
+        fi
+        return 0
+    fi
+
     "${parts[@]}"
 }
 
@@ -494,7 +521,7 @@ _write_workflow_system_prompt() {
 
 ## 1. Reglas de oro (innegociables)
 
-1. **No commit** sin que el usuario lo pida explícitamente. Proponer diff, dejar que commitée.
+1. **No commit** sin que el usuario lo pida explícitamente. Proponer diff, dejar que commitée. Los commits son propiedad exclusiva del usuario — nunca añadir `Co-Authored-By` ni ninguna firma de agente.
 2. **No leer/escribir** secretos (ver `.optimia/AGENTS.md`). Si aparecen, parar y avisar.
 3. **No inventar URLs** ni nombres de paquetes. Si dudas, decir "no lo sé" y proponer cómo averiguarlo.
 4. **Verificar antes de "done"**: ejecutar/tests/logs que prueben que funciona. Sin eso, no marcar completo.
@@ -635,6 +662,7 @@ Reglas de mantenimiento:
 ## 8. Anti-patrones (no hacer)
 
 - ❌ Commit sin que el usuario lo pida.
+- ❌ Añadir `Co-Authored-By` u otras firmas de agente en commits — todos los commits pertenecen únicamente al usuario.
 - ❌ Escribir archivos de deploy/configuración dentro del repo cuando son para el servidor → usar `/tmp/`.
 - ❌ Marcar items `[x]` sin evidencia de verificación.
 - ❌ Reescribir código que no es del alcance (scope creep).
@@ -921,6 +949,8 @@ pkg_installed() {
     local spec="$1"
     if [[ "$spec" == python:* ]]; then
         python3 -c "import ${spec#python:}" &>/dev/null 2>&1
+    elif [[ "$spec" == npm:* ]]; then
+        npm list -g --depth=0 "${spec#npm:}" &>/dev/null 2>&1
     else
         command -v "$spec" &>/dev/null
     fi
@@ -936,6 +966,8 @@ get_install_hint() {
         copilot)      echo "gh extension install github/gh-copilot" ;;
         agentmemory)  echo "pipx install agentmemory" ;;
         webwright)    echo "pipx install webwright" ;;
+        agent-reach)  echo "pipx install https://github.com/Panniantong/agent-reach/archive/main.zip && agent-reach install --env=auto" ;;
+        ponytail)     echo "npm install -g @dietrichgebert/ponytail" ;;
         *)            echo "(see documentation for $1)" ;;
     esac
 }
@@ -945,6 +977,7 @@ check_workflow_packages() {
     local -a missing_names=()
     local -a missing_hints=()
     local -a missing_descs=()
+    local -a missing_notes=()
 
     local -a secs=()
     mapfile -t secs < <(ini_sections "$OPTIMIA_TOOLS_FILE")
@@ -964,12 +997,14 @@ check_workflow_packages() {
 
         pkg_installed "$check_cmd" && continue
 
-        local hint desc
+        local hint desc note
         hint=$(ini_get "$OPTIMIA_TOOLS_FILE" "$tool" "install_hint" "$(get_install_hint "$tool")")
         desc=$(ini_get "$OPTIMIA_TOOLS_FILE" "$tool" "description" "$tool")
+        note=$(ini_get "$OPTIMIA_TOOLS_FILE" "$tool" "post_install_note" "")
         missing_names+=("$tool")
         missing_hints+=("$hint")
         missing_descs+=("$desc")
+        missing_notes+=("$note")
     done
 
     [[ ${#missing_names[@]} -eq 0 ]] && return 0
@@ -991,6 +1026,11 @@ check_workflow_packages() {
             log "$_MSG_INSTALLING ${missing_names[$i]}: ${missing_hints[$i]}"
             if safe_install "${missing_hints[$i]}"; then
                 log_ok "${missing_names[$i]} $_MSG_INSTALL_OK"
+                if [[ -n "${missing_notes[$i]:-}" ]]; then
+                    echo ""
+                    printf '  %s%s%s\n' "$YELLOW" "${missing_notes[$i]}" "$NC"
+                    echo ""
+                fi
             else
                 log_err "$_MSG_INSTALL_FAIL ${missing_names[$i]}."
                 printf '    %s %s\n' "$_MSG_INSTALL_MANUAL" "${missing_hints[$i]}"
@@ -1064,7 +1104,7 @@ description=OpenCode AI CLI
 order=4
 enabled=true
 ai_tool=true
-wrapper=headroom
+wrapper=
 launch_args=
 install_hint=npm install -g opencode
 
@@ -1087,6 +1127,23 @@ ai_tool=true
 wrapper=
 launch_args=
 install_hint=gh extension install github/gh-copilot
+
+[agent-reach]
+command=agent-reach
+description=Internet access for AI agents (Twitter, Reddit, YouTube, GitHub...)
+order=9
+enabled=true
+ai_tool=false
+install_hint=pipx install https://github.com/Panniantong/agent-reach/archive/main.zip && agent-reach install --env=auto
+
+[ponytail]
+command=npm:@dietrichgebert/ponytail
+description=Code quality plugin — YAGNI ladder (-54% LOC, -20% cost)
+order=10
+enabled=true
+ai_tool=false
+install_hint=npm install -g @dietrichgebert/ponytail
+post_install_note=To enable ponytail in Claude Code, run inside Claude Code:\n  /plugin marketplace add DietrichGebert/ponytail\n  /plugin install ponytail@ponytail
 
 EOF
 }
@@ -1220,6 +1277,26 @@ and complete web tasks end-to-end as a single re-runnable Python script.
 No multi-agent system, no graph engine — just a terminal and a browser.
 **Install**: `pipx install webwright`
 
+### agent-reach  (order=9, disabled by default)
+**Purpose**: Gives AI agents free internet access — reads and searches Twitter,
+Reddit, YouTube, GitHub, Bilibili, and more without API keys. Installs upstream
+CLI tools (OpenCLI, twitter-cli, bili-cli, rdt-cli, yt-dlp, …) and routes
+requests to them. Config lives in `~/.agent-reach/`; never writes to the project.
+**Install**: `pipx install https://github.com/Panniantong/agent-reach/archive/main.zip && agent-reach install --env=auto`
+**GitHub**: https://github.com/Panniantong/Agent-Reach
+Enable with `enabled=true` in tools.conf `[agent-reach]` section.
+
+### ponytail  (order=10, disabled by default)
+**Purpose**: Code quality plugin — applies a YAGNI ladder before generating code
+(-54% LOC, -20% cost, 100% safe vs. baseline). Not a CLI binary; installs as an
+npm package that Claude Code, opencode, and Gemini CLI load as a plugin.
+**Install**: `npm install -g @dietrichgebert/ponytail`
+  - Claude Code: `/plugin marketplace add DietrichGebert/ponytail` then `/plugin install ponytail@ponytail`
+  - opencode: add `{ "plugin": ["@dietrichgebert/ponytail"] }` to `opencode.json`
+  - Gemini CLI: `gemini extensions install https://github.com/DietrichGebert/ponytail`
+**GitHub**: https://github.com/DietrichGebert/ponytail
+Enable with `enabled=true` in tools.conf `[ponytail]` section.
+
 ---
 
 ## Session context (Preguntas rápidas)
@@ -1346,6 +1423,30 @@ ai_tool=true
 wrapper=
 launch_args=
 install_hint=gh extension install github/gh-copilot"
+
+    # v0.2.3: headroom does not support `headroom wrap opencode` — clear wrapper
+    _tools_ini_set "opencode" "wrapper" ""
+
+    # v0.2.3: agent-reach (internet access for AI agents)
+    _tools_append_section "agent-reach" \
+"[agent-reach]
+command=agent-reach
+description=Internet access for AI agents (Twitter, Reddit, YouTube, GitHub...)
+order=9
+enabled=true
+ai_tool=false
+install_hint=pipx install https://github.com/Panniantong/agent-reach/archive/main.zip && agent-reach install --env=auto"
+
+    # v0.2.3: ponytail (code quality — YAGNI ladder)
+    _tools_append_section "ponytail" \
+"[ponytail]
+command=npm:@dietrichgebert/ponytail
+description=Code quality plugin — YAGNI ladder (-54% LOC, -20% cost)
+order=10
+enabled=true
+ai_tool=false
+install_hint=npm install -g @dietrichgebert/ponytail
+post_install_note=To enable ponytail in Claude Code, run inside Claude Code:\n  /plugin marketplace add DietrichGebert/ponytail\n  /plugin install ponytail@ponytail"
 }
 
 # Updates a key inside a specific [section] of tools.conf.
@@ -1869,4 +1970,4 @@ main() {
     launch_ai_tool "$ai_tool" "$repo_conf"
 }
 
-main "$@"
+[[ "${OPTIMIA_SOURCED:-}" == "1" ]] || main "$@"

@@ -3,3 +3,10 @@ optimia_*_all/
 node_modules/
 /.optimia
 /.codegraph
+
+# AI assistant config
+.claude/
+.github/copilot-instructions.md
+CLAUDE.md
+AGENTS.md
+GEMINI.md

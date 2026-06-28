@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-OPTIMIA_VERSION="0.2.2"
+OPTIMIA_VERSION="0.2.3"
 OPTIMIA_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/optimia"
 OPTIMIA_REPOS_DIR="$OPTIMIA_CONFIG_DIR/repos"
 OPTIMIA_TOOLS_FILE="$OPTIMIA_CONFIG_DIR/tools.conf"
@@ -966,7 +966,6 @@ get_install_hint() {
         copilot)      echo "gh extension install github/gh-copilot" ;;
         agentmemory)  echo "pipx install agentmemory" ;;
         webwright)    echo "pipx install webwright" ;;
-        agent-reach)  echo "pipx install https://github.com/Panniantong/agent-reach/archive/main.zip && agent-reach install --env=auto" ;;
         ponytail)     echo "npm install -g @dietrichgebert/ponytail" ;;
         *)            echo "(see documentation for $1)" ;;
     esac
@@ -1128,14 +1127,6 @@ wrapper=
 launch_args=
 install_hint=gh extension install github/gh-copilot
 
-[agent-reach]
-command=agent-reach
-description=Internet access for AI agents (Twitter, Reddit, YouTube, GitHub...)
-order=9
-enabled=true
-ai_tool=false
-install_hint=pipx install https://github.com/Panniantong/agent-reach/archive/main.zip && agent-reach install --env=auto
-
 [ponytail]
 command=npm:@dietrichgebert/ponytail
 description=Code quality plugin — YAGNI ladder (-54% LOC, -20% cost)
@@ -1276,15 +1267,6 @@ a terminal to launch browser sessions, capture screenshots, inspect page state,
 and complete web tasks end-to-end as a single re-runnable Python script.
 No multi-agent system, no graph engine — just a terminal and a browser.
 **Install**: `pipx install webwright`
-
-### agent-reach  (order=9, disabled by default)
-**Purpose**: Gives AI agents free internet access — reads and searches Twitter,
-Reddit, YouTube, GitHub, Bilibili, and more without API keys. Installs upstream
-CLI tools (OpenCLI, twitter-cli, bili-cli, rdt-cli, yt-dlp, …) and routes
-requests to them. Config lives in `~/.agent-reach/`; never writes to the project.
-**Install**: `pipx install https://github.com/Panniantong/agent-reach/archive/main.zip && agent-reach install --env=auto`
-**GitHub**: https://github.com/Panniantong/Agent-Reach
-Enable with `enabled=true` in tools.conf `[agent-reach]` section.
 
 ### ponytail  (order=10, disabled by default)
 **Purpose**: Code quality plugin — applies a YAGNI ladder before generating code
@@ -1427,16 +1409,6 @@ install_hint=gh extension install github/gh-copilot"
     # v0.2.3: headroom does not support `headroom wrap opencode` — clear wrapper
     _tools_ini_set "opencode" "wrapper" ""
 
-    # v0.2.3: agent-reach (internet access for AI agents)
-    _tools_append_section "agent-reach" \
-"[agent-reach]
-command=agent-reach
-description=Internet access for AI agents (Twitter, Reddit, YouTube, GitHub...)
-order=9
-enabled=true
-ai_tool=false
-install_hint=pipx install https://github.com/Panniantong/agent-reach/archive/main.zip && agent-reach install --env=auto"
-
     # v0.2.3: ponytail (code quality — YAGNI ladder)
     _tools_append_section "ponytail" \
 "[ponytail]
@@ -1447,6 +1419,9 @@ enabled=true
 ai_tool=false
 install_hint=npm install -g @dietrichgebert/ponytail
 post_install_note=To enable ponytail in Claude Code, run inside Claude Code:\n  /plugin marketplace add DietrichGebert/ponytail\n  /plugin install ponytail@ponytail"
+
+    # v0.2.3: remove agent-reach (no longer supported)
+    _tools_remove_section "agent-reach"
 }
 
 # Updates a key inside a specific [section] of tools.conf.
@@ -1466,6 +1441,17 @@ _tools_ini_set() {
     printf '%s\n' "$tmp" > "$OPTIMIA_TOOLS_FILE"
 }
 
+# Removes a [section] and all its keys from tools.conf.
+_tools_remove_section() {
+    local section="$1"
+    local tmp
+    tmp=$(_INISEC="$section" awk '
+        BEGIN { sec=ENVIRON["_INISEC"]; in_sec=0 }
+        /^\[/ { cur=$0; gsub(/[\[\] \t]/,"",cur); in_sec=(cur==sec); if (!in_sec) print; next }
+        !in_sec { print }
+    ' "$OPTIMIA_TOOLS_FILE")
+    printf '%s\n' "$tmp" > "$OPTIMIA_TOOLS_FILE"
+}
 
 # ── List enabled AI tools sorted by order ─────────────────────────────────────
 list_ai_tools() {

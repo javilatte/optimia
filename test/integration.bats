@@ -19,31 +19,6 @@ _tools_list() {
         bash "${BATS_TEST_DIRNAME}/../bin/optimia" tools list 2>&1
 }
 
-# ── agent-reach ────────────────────────────────────────────────────────────────
-
-@test "tools list: agent-reach appears in output" {
-    run _tools_list
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"agent-reach"* ]]
-}
-
-@test "tools list: agent-reach shows as disabled" {
-    run _tools_list
-    [[ "$output" == *"agent-reach"* ]]
-    # disabled tools show ✗ — check the agent-reach line has no [AI] tag
-    # and that the section exists; enabled=false means it won't show ✓
-    echo "$output" | grep "agent-reach" | grep -qv "\[AI\]"
-}
-
-@test "tools list: agent-reach shows [not installed] when binary missing" {
-    run _tools_list
-    # agent-reach binary is not installed in CI — expect [not installed]
-    if command -v agent-reach &>/dev/null; then
-        skip "agent-reach is installed on this machine"
-    fi
-    echo "$output" | grep "agent-reach" | grep -q "not installed"
-}
-
 # ── ponytail ───────────────────────────────────────────────────────────────────
 
 @test "tools list: ponytail appears in output" {
@@ -68,6 +43,5 @@ _tools_list() {
     [[ "$output" == *"claude"*      ]]
     [[ "$output" == *"headroom"*    ]]
     [[ "$output" == *"codegraph"*   ]]
-    [[ "$output" == *"agent-reach"* ]]
     [[ "$output" == *"ponytail"*    ]]
 }

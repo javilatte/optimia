@@ -966,7 +966,6 @@ get_install_hint() {
         copilot)      echo "gh extension install github/gh-copilot" ;;
         agentmemory)  echo "pipx install agentmemory" ;;
         webwright)    echo "pipx install webwright" ;;
-        agent-reach)  echo "pipx install https://github.com/Panniantong/agent-reach/archive/main.zip && agent-reach install --env=auto" ;;
         ponytail)     echo "npm install -g @dietrichgebert/ponytail" ;;
         *)            echo "(see documentation for $1)" ;;
     esac
@@ -1128,14 +1127,6 @@ wrapper=
 launch_args=
 install_hint=gh extension install github/gh-copilot
 
-[agent-reach]
-command=agent-reach
-description=Internet access for AI agents (Twitter, Reddit, YouTube, GitHub...)
-order=9
-enabled=true
-ai_tool=false
-install_hint=pipx install https://github.com/Panniantong/agent-reach/archive/main.zip && agent-reach install --env=auto
-
 [ponytail]
 command=npm:@dietrichgebert/ponytail
 description=Code quality plugin — YAGNI ladder (-54% LOC, -20% cost)
@@ -1277,15 +1268,6 @@ and complete web tasks end-to-end as a single re-runnable Python script.
 No multi-agent system, no graph engine — just a terminal and a browser.
 **Install**: `pipx install webwright`
 
-### agent-reach  (order=9, disabled by default)
-**Purpose**: Gives AI agents free internet access — reads and searches Twitter,
-Reddit, YouTube, GitHub, Bilibili, and more without API keys. Installs upstream
-CLI tools (OpenCLI, twitter-cli, bili-cli, rdt-cli, yt-dlp, …) and routes
-requests to them. Config lives in `~/.agent-reach/`; never writes to the project.
-**Install**: `pipx install https://github.com/Panniantong/agent-reach/archive/main.zip && agent-reach install --env=auto`
-**GitHub**: https://github.com/Panniantong/Agent-Reach
-Enable with `enabled=true` in tools.conf `[agent-reach]` section.
-
 ### ponytail  (order=10, disabled by default)
 **Purpose**: Code quality plugin — applies a YAGNI ladder before generating code
 (-54% LOC, -20% cost, 100% safe vs. baseline). Not a CLI binary; installs as an
@@ -1426,16 +1408,6 @@ install_hint=gh extension install github/gh-copilot"
 
     # v0.2.3: headroom does not support `headroom wrap opencode` — clear wrapper
     _tools_ini_set "opencode" "wrapper" ""
-
-    # v0.2.3: agent-reach (internet access for AI agents)
-    _tools_append_section "agent-reach" \
-"[agent-reach]
-command=agent-reach
-description=Internet access for AI agents (Twitter, Reddit, YouTube, GitHub...)
-order=9
-enabled=true
-ai_tool=false
-install_hint=pipx install https://github.com/Panniantong/agent-reach/archive/main.zip && agent-reach install --env=auto"
 
     # v0.2.3: ponytail (code quality — YAGNI ladder)
     _tools_append_section "ponytail" \

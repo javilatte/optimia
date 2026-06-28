@@ -31,13 +31,6 @@ setup() {
 
 # ── get_install_hint ───────────────────────────────────────────────────────────
 
-@test "get_install_hint: agent-reach contains pipx install" {
-    run get_install_hint agent-reach
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"pipx install"* ]]
-    [[ "$output" == *"agent-reach"* ]]
-}
-
 @test "get_install_hint: ponytail contains @dietrichgebert/ponytail" {
     run get_install_hint ponytail
     [ "$status" -eq 0 ]
@@ -58,30 +51,12 @@ _write_tools_to_tmp() {
     echo "$tmp"
 }
 
-@test "default tools config includes [agent-reach]" {
-    local tmp; tmp=$(_write_tools_to_tmp)
-    grep -q "^\[agent-reach\]" "$tmp"
-    rm -f "$tmp"
-}
-
 @test "default tools config includes [ponytail]" {
     local tmp; tmp=$(_write_tools_to_tmp)
     grep -q "^\[ponytail\]" "$tmp"
     rm -f "$tmp"
 }
 
-@test "agent-reach is enabled by default" {
-    local tmp; tmp=$(_write_tools_to_tmp)
-    local in_section=0
-    while IFS= read -r line; do
-        [[ "$line" == "[agent-reach]" ]] && in_section=1 && continue
-        [[ "$line" =~ ^\[.*\]$ ]] && in_section=0
-        if [[ "$in_section" -eq 1 && "$line" == "enabled=true" ]]; then
-            rm -f "$tmp"; return 0
-        fi
-    done < "$tmp"
-    rm -f "$tmp"; return 1
-}
 
 @test "ponytail is enabled by default" {
     local tmp; tmp=$(_write_tools_to_tmp)

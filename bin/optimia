@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-OPTIMIA_VERSION="0.2.2"
+OPTIMIA_VERSION="0.2.3"
 OPTIMIA_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/optimia"
 OPTIMIA_REPOS_DIR="$OPTIMIA_CONFIG_DIR/repos"
 OPTIMIA_TOOLS_FILE="$OPTIMIA_CONFIG_DIR/tools.conf"
@@ -1419,6 +1419,9 @@ enabled=true
 ai_tool=false
 install_hint=npm install -g @dietrichgebert/ponytail
 post_install_note=To enable ponytail in Claude Code, run inside Claude Code:\n  /plugin marketplace add DietrichGebert/ponytail\n  /plugin install ponytail@ponytail"
+
+    # v0.2.3: remove agent-reach (no longer supported)
+    _tools_remove_section "agent-reach"
 }
 
 # Updates a key inside a specific [section] of tools.conf.
@@ -1438,6 +1441,17 @@ _tools_ini_set() {
     printf '%s\n' "$tmp" > "$OPTIMIA_TOOLS_FILE"
 }
 
+# Removes a [section] and all its keys from tools.conf.
+_tools_remove_section() {
+    local section="$1"
+    local tmp
+    tmp=$(_INISEC="$section" awk '
+        BEGIN { sec=ENVIRON["_INISEC"]; in_sec=0 }
+        /^\[/ { cur=$0; gsub(/[\[\] \t]/,"",cur); in_sec=(cur==sec); if (!in_sec) print; next }
+        !in_sec { print }
+    ' "$OPTIMIA_TOOLS_FILE")
+    printf '%s\n' "$tmp" > "$OPTIMIA_TOOLS_FILE"
+}
 
 # ── List enabled AI tools sorted by order ─────────────────────────────────────
 list_ai_tools() {

@@ -20,6 +20,8 @@ setup() {
 }
 
 @test "pkg_installed: npm: prefix detects headroom (globally installed)" {
+    npm list -g --depth=0 headroom &>/dev/null \
+        || skip "headroom is not globally installed on this machine"
     run pkg_installed npm:headroom
     [ "$status" -eq 0 ]
 }

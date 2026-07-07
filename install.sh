@@ -19,11 +19,14 @@ if [[ ! -f "$SCRIPT" ]]; then
     exit 1
 fi
 
-if [[ ! -w "$BINDIR" ]]; then
-    echo "Note: $BINDIR is not writable — trying with sudo."
-    sudo install -Dm 755 "$SCRIPT" "$BINDIR/optimia"
+# install -d + install -m: portable across GNU and BSD/macOS install
+# (BSD install has no -D flag).
+if install -d "$BINDIR" 2>/dev/null && [[ -w "$BINDIR" ]]; then
+    install -m 755 "$SCRIPT" "$BINDIR/optimia"
 else
-    install -Dm 755 "$SCRIPT" "$BINDIR/optimia"
+    echo "Note: $BINDIR is not writable — trying with sudo."
+    sudo install -d "$BINDIR"
+    sudo install -m 755 "$SCRIPT" "$BINDIR/optimia"
 fi
 
 echo "Installed → $BINDIR/optimia"

@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 [![Node](https://img.shields.io/badge/node-%3E%3D14-brightgreen?style=flat-square&logo=node.js)](https://nodejs.org/)
 [![Linux](https://img.shields.io/badge/Linux-tested-brightgreen?style=flat-square&logo=linux)](https://github.com/)
-[![macOS](https://img.shields.io/badge/macOS-untested%20%2F%20WIP-yellow?style=flat-square&logo=apple)](https://www.apple.com/macos)
+[![macOS](https://img.shields.io/badge/macOS-tested-brightgreen?style=flat-square&logo=apple)](https://www.apple.com/macos)
 [![Windows](https://img.shields.io/badge/Windows-untested%20%2F%20WIP-yellow?style=flat-square&logo=windows)](https://www.microsoft.com/windows)
 
 AI tool orchestrator for developers. Run `optimia` in any project directory and it will:
@@ -69,7 +69,7 @@ npx @javilatte/optimia
 
 | Tool | Required | Purpose |
 |---|---|---|
-| `bash` ≥ 4.0 | yes | runs the script |
+| `bash` ≥ 3.2 | yes | runs the script (macOS system bash works out of the box) |
 | `node` / `npx` ≥ 14 | yes | CodeGraph |
 | `claude` | one AI tool required | [Claude Code](https://claude.ai/code) |
 | `opencode` | one AI tool required | [OpenCode](https://opencode.ai) |

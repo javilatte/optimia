@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-OPTIMIA_VERSION="0.2.3"
+OPTIMIA_VERSION="0.2.4"
 OPTIMIA_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/optimia"
 OPTIMIA_REPOS_DIR="$OPTIMIA_CONFIG_DIR/repos"
 OPTIMIA_TOOLS_FILE="$OPTIMIA_CONFIG_DIR/tools.conf"
@@ -34,7 +34,7 @@ if [[ "$_L" =~ ^es([_\.].+)?$ ]]; then
     _MSG_INSTALL_OK="instalado."
     _MSG_INSTALL_FAIL="Falló la instalación de"
     _MSG_INSTALL_MANUAL="Instala manualmente:"
-    _MSG_INSTALL_PIPX="O instala pipx: sudo apt install pipx"
+    _MSG_INSTALL_PIPX="O instala pipx: brew install pipx (macOS) · sudo apt install pipx (Linux)"
     _MSG_PIPX_FALLBACK="pipx no encontrado — usando pip install --user"
     _MSG_QQ_HEADER="── Preguntas rápidas"
     _MSG_QQ_SKIP="(opcional — Enter para omitir)"
@@ -83,7 +83,7 @@ else
     _MSG_INSTALL_OK="installed."
     _MSG_INSTALL_FAIL="Failed to install"
     _MSG_INSTALL_MANUAL="Install manually:"
-    _MSG_INSTALL_PIPX="Or install pipx: sudo apt install pipx"
+    _MSG_INSTALL_PIPX="Or install pipx: brew install pipx (macOS) · sudo apt install pipx (Linux)"
     _MSG_PIPX_FALLBACK="pipx not found — using pip install --user"
     _MSG_QQ_HEADER="── Quick questions"
     _MSG_QQ_SKIP="(optional — press Enter to skip)"
@@ -187,10 +187,12 @@ safe_install() {
         return 0
     fi
 
-    # pipx fallback for Ubuntu externally-managed environments
+    # pipx fallback when pipx is not installed (macOS ships pip3, not pip)
     if [[ "$first" == "pipx" ]] && ! command -v pipx &>/dev/null; then
         log_warn "$_MSG_PIPX_FALLBACK"
-        parts=(pip install --user "${parts[@]:2}")
+        local pip_bin="pip"
+        command -v pip &>/dev/null || pip_bin="pip3"
+        parts=("$pip_bin" install --user "${parts[@]:2}")
     fi
 
     # For npm -g: detect EACCES (global prefix owned by root) and retry with sudo.
@@ -346,11 +348,21 @@ ask_choice() {
 # ── Repository detection ───────────────────────────────────────────────────────
 is_git_repo() { git rev-parse --git-dir >/dev/null 2>&1; }
 
+# Portable md5 of stdin: GNU coreutils ships md5sum, macOS/BSD ship md5.
+# Both produce the same digest, so repo IDs are identical across platforms.
+_md5() {
+    if command -v md5sum &>/dev/null; then
+        md5sum | cut -d' ' -f1
+    else
+        md5
+    fi
+}
+
 repo_id() {
     local seed
     seed=$(git remote get-url origin 2>/dev/null || true)
     [[ -z "$seed" ]] && seed="$(pwd)"
-    printf '%s' "$seed" | md5sum | cut -d' ' -f1
+    printf '%s' "$seed" | _md5
 }
 
 repo_label() {
@@ -698,7 +710,8 @@ Reglas extraídas útiles de este proyecto se promueven a `tasks/lessons.md` (ra
 
 *Si una sección entra en conflicto con la realidad del entorno, la realidad gana; actualizar este archivo.*
 PROMPT
-    sed -i "s|<PROJECT>|$(repo_label)|g" "$f"
+    # -i.bak + rm: the only in-place syntax both GNU and BSD sed accept.
+    sed -i.bak "s|<PROJECT>|$(repo_label)|g" "$f" && rm -f "$f.bak"
     log_ok "$_MSG_WF_PROMPT_OK ${DIM}${f}${NC}"
     return 0
 }
@@ -960,8 +973,8 @@ pkg_installed() {
 get_install_hint() {
     case "$1" in
         claude)       echo "npm install -g @anthropic-ai/claude-code" ;;
-        opencode)     echo "npm install -g opencode" ;;
-        headroom)     echo "npm install -g headroom" ;;
+        opencode)     echo "npm install -g opencode-ai" ;;
+        headroom)     echo "pipx install headroom-ai[all]" ;;
         gemini)       echo "npm install -g @google/gemini-cli" ;;
         copilot)      echo "gh extension install github/gh-copilot" ;;
         agentmemory)  echo "pipx install agentmemory" ;;
@@ -979,7 +992,9 @@ check_workflow_packages() {
     local -a missing_notes=()
 
     local -a secs=()
-    mapfile -t secs < <(ini_sections "$OPTIMIA_TOOLS_FILE")
+    local _s
+    while IFS= read -r _s; do secs+=("$_s"); done < <(ini_sections "$OPTIMIA_TOOLS_FILE")
+    [[ ${#secs[@]} -eq 0 ]] && return 0
 
     local tool
     for tool in "${secs[@]}"; do
@@ -1027,7 +1042,8 @@ check_workflow_packages() {
                 log_ok "${missing_names[$i]} $_MSG_INSTALL_OK"
                 if [[ -n "${missing_notes[$i]:-}" ]]; then
                     echo ""
-                    printf '  %s%s%s\n' "$YELLOW" "${missing_notes[$i]}" "$NC"
+                    # %b: post_install_note may embed \n escapes
+                    printf '  %s%b%s\n' "$YELLOW" "${missing_notes[$i]}" "$NC"
                     echo ""
                 fi
             else
@@ -1085,7 +1101,7 @@ description=Token-efficient AI wrapper (60-90% savings)
 order=2
 enabled=true
 ai_tool=false
-install_hint=npm install -g headroom
+install_hint=pipx install headroom-ai[all]
 
 [claude]
 command=claude
@@ -1105,7 +1121,7 @@ enabled=true
 ai_tool=true
 wrapper=
 launch_args=
-install_hint=npm install -g opencode
+install_hint=npm install -g opencode-ai
 
 [gemini]
 command=gemini
@@ -1231,7 +1247,7 @@ $ optimia
 ### Headroom  (order=2)
 **Purpose**: Token-optimised proxy — 60-90% fewer tokens.
 **Command**: `headroom wrap [flags] <ai-command>`
-**Install**: `npm install -g headroom`
+**Install**: `pipx install headroom-ai[all]`
 
 ### Claude Code  (order=3)
 **Command**: `claude`  **Launched as**: `headroom wrap [flags] claude`
@@ -1240,7 +1256,7 @@ $ optimia
 
 ### OpenCode  (order=4)
 **Command**: `opencode`  **Launched as**: `headroom wrap opencode`
-**Install**: `npm install -g opencode`
+**Install**: `npm install -g opencode-ai`
 **Session context**: reads `OPTIMIA_SESSION_FILE` env var
 
 ### Gemini CLI  (order=5, disabled by default)
@@ -1422,6 +1438,12 @@ post_install_note=To enable ponytail in Claude Code, run inside Claude Code:\n  
 
     # v0.2.3: remove agent-reach (no longer supported)
     _tools_remove_section "agent-reach"
+
+    # v0.2.4: fix stale install hints — "headroom" on npm is a name-squat
+    # placeholder (the real tool is the Python package headroom-ai) and
+    # opencode is published as opencode-ai.
+    _tools_ini_set "headroom" "install_hint" "pipx install headroom-ai[all]"
+    _tools_ini_set "opencode" "install_hint" "npm install -g opencode-ai"
 }
 
 # Updates a key inside a specific [section] of tools.conf.
@@ -1456,7 +1478,9 @@ _tools_remove_section() {
 # ── List enabled AI tools sorted by order ─────────────────────────────────────
 list_ai_tools() {
     local -a pairs=() secs=()
-    mapfile -t secs < <(ini_sections "$OPTIMIA_TOOLS_FILE")
+    local _s
+    while IFS= read -r _s; do secs+=("$_s"); done < <(ini_sections "$OPTIMIA_TOOLS_FILE")
+    [[ ${#secs[@]} -eq 0 ]] && return 0
     local sec
     for sec in "${secs[@]}"; do
         local enabled ai order
@@ -1465,6 +1489,7 @@ list_ai_tools() {
         order=$(ini_get   "$OPTIMIA_TOOLS_FILE" "$sec" "order"   "99")
         [[ "$enabled" == "true" && "$ai" == "true" ]] && pairs+=("${order}:${sec}")
     done
+    [[ ${#pairs[@]} -eq 0 ]] && return 0
     printf '%s\n' "${pairs[@]}" | sort -t: -k1,1n | cut -d: -f2
 }
 
@@ -1755,7 +1780,8 @@ configure_new_repo() {
     echo ""
 
     local -a ai_tools=()
-    mapfile -t ai_tools < <(list_ai_tools)
+    local _t
+    while IFS= read -r _t; do ai_tools+=("$_t"); done < <(list_ai_tools)
     ai_tools+=("$_MSG_ASK_EACH")
 
     local chosen
@@ -1832,7 +1858,9 @@ cmd_tools() {
         list)
             echo -e "${BOLD}Configured tools:${NC}"
             local -a secs=()
-            mapfile -t secs < <(ini_sections "$OPTIMIA_TOOLS_FILE")
+            local _s
+            while IFS= read -r _s; do secs+=("$_s"); done < <(ini_sections "$OPTIMIA_TOOLS_FILE")
+            [[ ${#secs[@]} -eq 0 ]] && return 0
             local sec
             for sec in "${secs[@]}"; do
                 local enabled desc order ai_tool cmd_val check_cmd status ai_tag inst_tag
@@ -1947,7 +1975,12 @@ main() {
 
     if [[ "$ai_tool" == "ask" ]]; then
         local -a ai_tools=()
-        mapfile -t ai_tools < <(list_ai_tools)
+        local _t
+        while IFS= read -r _t; do ai_tools+=("$_t"); done < <(list_ai_tools)
+        if [[ ${#ai_tools[@]} -eq 0 ]]; then
+            log_err "No AI tools enabled in tools.conf. Run: optimia tools edit"
+            exit 1
+        fi
         echo ""
         ai_tool=$(ask_choice "Which AI tool?" "${ai_tools[@]}")
     fi

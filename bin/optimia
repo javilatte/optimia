@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-OPTIMIA_VERSION="0.2.6"
+OPTIMIA_VERSION="0.2.7"
 OPTIMIA_NPM_PACKAGE="@javilatte/optimia"
 OPTIMIA_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/optimia"
 OPTIMIA_REPOS_DIR="$OPTIMIA_CONFIG_DIR/repos"
@@ -352,7 +352,7 @@ ask_choice() {
     done
     local choice
     while true; do
-        read -r -p "  Choice [1-${#options[@]}]: " choice
+        read -r -p "  Choice [1-${#options[@]}]: " choice || { echo "" >&2; exit 1; }
         if [[ "$choice" =~ ^[0-9]+$ ]] \
            && (( choice >= 1 && choice <= ${#options[@]} )); then
             echo "${options[$((choice-1))]}"; return

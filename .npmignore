@@ -2,3 +2,4 @@ DEBIAN/
 build-deb.sh
 *.deb
 optimia_*_all/
+info.gif

@@ -15,6 +15,8 @@ AI tool orchestrator for developers. Run `optimia` in any project directory and 
 - Write security constraints to `.claude/settings.json` and other tool config files
 - Launch the AI CLI wrapped in [headroom](https://github.com/chopratejas/headroom) for 60–90% token savings
 
+![optimIA demo](info.gif)
+
 ```
 $ optimia
 
@@ -162,6 +164,7 @@ All per-project state lives in `.optimia/` (added to `.gitignore` automatically 
 ```
 .optimia/
 ├── .codegraph/      CodeGraph SQLite database
+├── openwiki/        OpenWiki generated docs (if openwiki is installed)
 ├── security.md      Security rules (included in AI context files)
 ├── session.md       Session context — raw answers
 ├── system-prompt.md Workflow system prompt (optional, opt-in)
@@ -170,7 +173,7 @@ All per-project state lives in `.optimia/` (added to `.gitignore` automatically 
 └── GEMINI.md        Session context for Gemini CLI
 ```
 
-A symlink `.codegraph → .optimia/.codegraph` is created at the project root so the codegraph CLI and MCP server find the database at the expected path.
+A symlink `.codegraph → .optimia/.codegraph` is created at the project root so the codegraph CLI and MCP server find the database at the expected path. Likewise, when [OpenWiki](https://github.com/langchain-ai/openwiki) is enabled and installed, a symlink `openwiki → .optimia/openwiki` redirects its generated wiki (whose output path is hardcoded upstream to `openwiki/`) into `.optimia/`.
 
 **Backwards compatibility:** if a real `.codegraph/` directory already exists at the project root, optimIA uses it as-is and skips the `.optimia/` setup entirely.
 
@@ -197,11 +200,13 @@ All global config lives in `~/.config/optimia/` (respects `$XDG_CONFIG_HOME`).
 ### `config.conf` — global settings
 
 ```ini
-default_ai=claude           # Fallback AI if repo has no preference
-use_headroom=true           # Wrap AI CLI with headroom
-headroom_flags=             # Extra flags for headroom wrap
-ask_codegraph_update=true   # Ask to sync CodeGraph on every launch
-ask_quick_questions=true    # Show quick questions at every launch
+default_ai=claude                  # Fallback AI if repo has no preference
+use_headroom=true                  # Wrap AI CLI with headroom
+headroom_flags=                    # Extra flags for headroom wrap
+ask_codegraph_update=true          # Ask to sync CodeGraph on every launch
+ask_quick_questions=true           # Show quick questions at every launch
+check_updates=true                 # Check npm for a newer optimIA on launch
+update_check_interval_days=1       # Minimum days between registry checks
 ```
 
 ### `tools.conf` — tool definitions
@@ -257,32 +262,52 @@ optimia
   │
   ├─ 1. Read config (~/.config/optimia/)
   │
-  ├─ 2. Set up .optimia/
+  ├─ 2. Check for updates (if check_updates=true, not $CI, installed via npm -g)
+  │       Registry lookup throttled to once every update_check_interval_days
+  │       Newer version found → ask to update → npm install -g on confirm
+  │
+  ├─ 3. Set up .optimia/
   │       Create .optimia/, .codegraph symlink, update .gitignore
   │       Write .claude/settings.json (security — once only)
   │       Write .optimia/security.md (once only)
   │       Skip if legacy .codegraph/ exists at root
   │
-  ├─ 3. Check installed packages
+  ├─ 4. Check installed packages
   │       Any enabled tool missing → show install hint
   │
-  ├─ 4. First time in repo? → wizard
+  ├─ 5. First time in repo? → wizard
   │       Pick AI tool · Enable CodeGraph? · Install workflow tools?
   │
-  ├─ 5. CodeGraph (if enabled)
+  ├─ 6. CodeGraph (if enabled)
   │       Not initialised → npx @colbymchenry/codegraph init -i
   │       Initialised     → offer to sync
   │
-  ├─ 6. Quick questions (if ask_quick_questions=true)
+  ├─ 7. Quick questions (if ask_quick_questions=true)
   │       Write .optimia/session.md, CLAUDE.md, AGENTS.md, GEMINI.md
   │       Update .github/copilot-instructions.md session block
   │
-  ├─ 7. Pick AI tool (from repo config, global default, or ask)
+  ├─ 8. Pick AI tool (from repo config, global default, or ask)
   │
-  └─ 8. Launch
+  └─ 9. Launch
           headroom wrap [flags] <ai_tool> [launch_args]
           (direct if headroom disabled or not installed)
 ```
+
+---
+
+## OpenWiki — agent wiki for the codebase
+
+[OpenWiki](https://github.com/langchain-ai/openwiki) (by langchain-ai) writes and maintains a documentation wiki for the repository (architecture, workflows, quickstart) that AI agents read for context. It ships enabled in the default `tools.conf`.
+
+```bash
+npm install -g openwiki    # install
+openwiki code --init       # generate the wiki (first time in a repo)
+openwiki code --update     # refresh docs after code changes
+```
+
+OpenWiki's output path is hardcoded upstream to `openwiki/` at the repo root. optimIA redirects it into the project-local state directory: when the tool is enabled and installed, launch creates `.optimia/openwiki/` plus a root symlink `openwiki → .optimia/openwiki`, and adds `/openwiki` to `.gitignore`. A pre-existing real `openwiki/` directory is left untouched.
+
+Disable with `enabled=false` in the tools.conf `[openwiki]` section.
 
 ---
 
@@ -304,12 +329,7 @@ These are not included in the default tools.conf but can be added manually via `
 
 **[agentmemory](https://github.com/rohitg00/agentmemory)** — Persistent memory MCP server, compatible with Claude Code, opencode, Copilot CLI, Cursor, Gemini CLI, and any MCP client.
 ```bash
-pip install agentmemory   # then add [agentmemory] section to tools.conf
-```
-
-**[webwright](https://github.com/unclecode/webwright)** — Browser automation for AI agents. Gives the model a terminal to launch browser sessions and complete web tasks as a single re-runnable Python script.
-```bash
-pip install webwright      # then add [webwright] section to tools.conf
+npm install -g @agentmemory/agentmemory@latest   # then add [agentmemory] section to tools.conf
 ```
 
 ---

@@ -4,12 +4,14 @@
 
 set -euo pipefail
 
-OPTIMIA_VERSION="0.2.4"
+OPTIMIA_VERSION="0.2.6"
+OPTIMIA_NPM_PACKAGE="@javilatte/optimia"
 OPTIMIA_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/optimia"
 OPTIMIA_REPOS_DIR="$OPTIMIA_CONFIG_DIR/repos"
 OPTIMIA_TOOLS_FILE="$OPTIMIA_CONFIG_DIR/tools.conf"
 OPTIMIA_AGENTS_FILE="$OPTIMIA_CONFIG_DIR/AGENTS.md"
 OPTIMIA_GLOBAL_FILE="$OPTIMIA_CONFIG_DIR/config.conf"
+OPTIMIA_UPDATE_FILE="$OPTIMIA_CONFIG_DIR/update_check.conf"
 
 # Per-project state directory (new layout).
 # Legacy repos that already have .codegraph/ at root are used as-is.
@@ -75,6 +77,13 @@ if [[ "$_L" =~ ^es([_\.].+)?$ ]]; then
     _MSG_WF_PROMPT_SKIP="System prompt ya existía, conservado."
     _MSG_WF_SKILL_SKIP="Skill plan-optimizer ya existía, conservada."
     _MSG_WF_PROMPT_REF="Referencia al system prompt añadida a"
+    _MSG_UPDATE_AVAILABLE="Nueva versión de optimIA disponible"
+    _MSG_UPDATE_CURRENT="actual"
+    _MSG_UPDATE_ASK="¿Actualizar optimIA ahora?"
+    _MSG_UPDATE_INSTALLING="Actualizando optimIA…"
+    _MSG_UPDATE_OK="optimIA actualizado. Los cambios aplican en el próximo lanzamiento."
+    _MSG_UPDATE_FAIL="No se pudo actualizar automáticamente."
+    _MSG_UPDATE_MANUAL="Actualizá manualmente:"
 else
     _MSG_SUBTITLE="AI tool orchestrator"
     _MSG_PKGS_MISSING="Some workflow tools are not installed:"
@@ -124,6 +133,13 @@ else
     _MSG_WF_PROMPT_SKIP="System prompt already existed, kept."
     _MSG_WF_SKILL_SKIP="plan-optimizer skill already existed, kept."
     _MSG_WF_PROMPT_REF="System prompt reference added to"
+    _MSG_UPDATE_AVAILABLE="New optimIA version available"
+    _MSG_UPDATE_CURRENT="current"
+    _MSG_UPDATE_ASK="Update optimIA now?"
+    _MSG_UPDATE_INSTALLING="Updating optimIA…"
+    _MSG_UPDATE_OK="optimIA updated. Changes apply on next launch."
+    _MSG_UPDATE_FAIL="Automatic update failed."
+    _MSG_UPDATE_MANUAL="Update manually:"
 fi
 
 # ── Platform check ─────────────────────────────────────────────────────────────
@@ -945,11 +961,33 @@ ensure_project_dir() {
         fi
     fi
 
+    # OpenWiki writes its wiki to <repo>/openwiki/ (path hardcoded upstream).
+    # Same trick as .codegraph: symlink openwiki → .optimia/openwiki so the
+    # docs land inside .optimia/. Only when the tool is enabled and installed;
+    # a pre-existing real openwiki/ dir at root is left untouched.
+    if is_git_repo; then
+        local ow_enabled="false"
+        if [[ -f "$OPTIMIA_TOOLS_FILE" ]]; then
+            ow_enabled=$(ini_get "$OPTIMIA_TOOLS_FILE" "openwiki" "enabled" "false")
+        fi
+        if [[ "$ow_enabled" == "true" ]] && pkg_installed openwiki; then
+            if [[ ! -e "openwiki" && ! -L "openwiki" ]]; then
+                mkdir -p "$OPTIMIA_LOCAL_DIR/openwiki"
+                ln -s "$OPTIMIA_LOCAL_DIR/openwiki" "openwiki"
+            elif [[ -L "openwiki" ]]; then
+                mkdir -p "$OPTIMIA_LOCAL_DIR/openwiki"
+            fi
+        fi
+    fi
+
     if is_git_repo; then
         local gi=".gitignore"
         touch "$gi"
         grep -qE '^/?\.optimia/?$'   "$gi" 2>/dev/null || printf '\n/.optimia\n'  >> "$gi"
         grep -qE '^/?\.codegraph/?$' "$gi" 2>/dev/null || printf '/.codegraph\n'  >> "$gi"
+        if [[ -L "openwiki" ]]; then
+            grep -qE '^/?openwiki/?$' "$gi" 2>/dev/null || printf '/openwiki\n'   >> "$gi"
+        fi
     fi
 
     write_project_settings
@@ -977,9 +1015,9 @@ get_install_hint() {
         headroom)     echo "pipx install headroom-ai[all]" ;;
         gemini)       echo "npm install -g @google/gemini-cli" ;;
         copilot)      echo "gh extension install github/gh-copilot" ;;
-        agentmemory)  echo "pipx install agentmemory" ;;
-        webwright)    echo "pipx install webwright" ;;
+        agentmemory)  echo "npm install -g @agentmemory/agentmemory@latest" ;;
         ponytail)     echo "npm install -g @dietrichgebert/ponytail" ;;
+        openwiki)     echo "npm install -g openwiki" ;;
         *)            echo "(see documentation for $1)" ;;
     esac
 }
@@ -1056,6 +1094,75 @@ check_workflow_packages() {
     echo ""
 }
 
+# ── Self-update ─────────────────────────────────────────────────────────────────
+
+# True if dotted-numeric version $1 > $2 (e.g. "0.2.10" > "0.2.9").
+# Avoids `sort -V`, which BSD/macOS sort does not support.
+version_gt() {
+    local a="$1" b="$2"
+    local -a pa pb
+    IFS='.' read -ra pa <<< "$a"
+    IFS='.' read -ra pb <<< "$b"
+    local i ai bi
+    for i in 0 1 2; do
+        ai="${pa[$i]:-0}" bi="${pb[$i]:-0}"
+        (( 10#$ai > 10#$bi )) && return 0
+        (( 10#$ai < 10#$bi )) && return 1
+    done
+    return 1
+}
+
+# Checks npm for a newer release and offers to install it directly.
+# No-ops (no network call, no prompt) when:
+#   - check_updates=false in global config
+#   - $CI is set (non-interactive automation)
+#   - npm is missing, or optimia isn't installed via `npm install -g`
+#     (npx / install.sh / a dev checkout — updating them here would be wrong)
+# The registry lookup is throttled to once every update_check_interval_days;
+# within that window the cached result is reused (and re-offered) with no
+# network call, so a launch never pays repeated latency for this.
+check_for_updates() {
+    local check_updates
+    check_updates=$(kv_get "$OPTIMIA_GLOBAL_FILE" "check_updates" "true")
+    [[ "$check_updates" == "true" ]] || return 0
+    [[ -n "${CI:-}" ]] && return 0
+    command -v npm &>/dev/null || return 0
+    npm ls -g "$OPTIMIA_NPM_PACKAGE" --depth=0 &>/dev/null || return 0
+
+    local interval_days now last_check latest
+    interval_days=$(kv_get "$OPTIMIA_GLOBAL_FILE" "update_check_interval_days" "1")
+    now=$(date +%s)
+    last_check=$(kv_get "$OPTIMIA_UPDATE_FILE" "last_check" "0")
+    latest=$(kv_get "$OPTIMIA_UPDATE_FILE" "latest_seen" "")
+
+    if (( now - last_check >= interval_days * 86400 )); then
+        local fetched
+        fetched=$(npm view "$OPTIMIA_NPM_PACKAGE" version --fetch-timeout=3000 2>/dev/null)
+        # Only trust a clean semver line — discards npm warnings/garbage output.
+        if [[ "$fetched" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            latest="$fetched"
+            kv_set "$OPTIMIA_UPDATE_FILE" "latest_seen" "$latest"
+        fi
+        kv_set "$OPTIMIA_UPDATE_FILE" "last_check" "$now"
+    fi
+
+    [[ -n "$latest" ]] || return 0
+    version_gt "$latest" "$OPTIMIA_VERSION" || return 0
+
+    echo ""
+    log "${_MSG_UPDATE_AVAILABLE}: ${BOLD}v${latest}${NC} (${_MSG_UPDATE_CURRENT} v${OPTIMIA_VERSION})"
+    if ask_yn "$_MSG_UPDATE_ASK" "n"; then
+        log "$_MSG_UPDATE_INSTALLING"
+        if safe_install "npm install -g ${OPTIMIA_NPM_PACKAGE}"; then
+            log_ok "$_MSG_UPDATE_OK"
+        else
+            log_err "$_MSG_UPDATE_FAIL"
+            printf '  %s npm install -g %s\n' "$_MSG_UPDATE_MANUAL" "$OPTIMIA_NPM_PACKAGE"
+        fi
+    fi
+    echo ""
+}
+
 # ── Default config files ───────────────────────────────────────────────────────
 write_default_global() {
     cat > "$OPTIMIA_GLOBAL_FILE" <<'EOF'
@@ -1067,6 +1174,8 @@ use_headroom=true
 headroom_flags=
 ask_codegraph_update=true
 ask_quick_questions=true
+check_updates=true
+update_check_interval_days=1
 EOF
 }
 
@@ -1152,6 +1261,15 @@ ai_tool=false
 install_hint=npm install -g @dietrichgebert/ponytail
 post_install_note=To enable ponytail in Claude Code, run inside Claude Code:\n  /plugin marketplace add DietrichGebert/ponytail\n  /plugin install ponytail@ponytail
 
+[openwiki]
+command=openwiki
+description=Agent wiki — auto-generated codebase docs (langchain-ai)
+order=11
+enabled=true
+ai_tool=false
+install_hint=npm install -g openwiki
+post_install_note=To generate the wiki, run inside the repo:\n  openwiki code --init\nDocs are stored in .optimia/openwiki/ (symlinked as openwiki/ at root)
+
 EOF
 }
 
@@ -1179,13 +1297,16 @@ All per-project state lives in `.optimia/` (gitignored):
 ```
 .optimia/
 ├── .codegraph/      CodeGraph database (symlinked as /.codegraph for compat)
+├── openwiki/        OpenWiki docs (symlinked as /openwiki for compat)
 ├── session.md       Session context from quick questions (raw)
 └── CLAUDE.md        Session context formatted for Claude Code
 ```
 
 A symlink `.codegraph → .optimia/.codegraph` is created at the project root so
 that the codegraph CLI and MCP server find the database at the expected path
-without any changes to those tools.
+without any changes to those tools. Likewise, when OpenWiki is enabled and
+installed, `openwiki → .optimia/openwiki` redirects its generated docs into
+`.optimia/`.
 
 **Backwards compatibility**: if `.codegraph/` already exists as a *real*
 directory at the project root (legacy layout), optimIA uses it as-is and does
@@ -1274,17 +1395,10 @@ Enable by setting `enabled=true` in tools.conf `[copilot]` section.
 **Purpose**: Persistent memory across AI sessions. Runs as an MCP server
 compatible with Claude Code, OpenCode, GitHub Copilot CLI, Cursor, Gemini CLI,
 Codex CLI, and any MCP client.
-**Install**: `pipx install agentmemory`
+**Install**: `npm install -g @agentmemory/agentmemory@latest`
 **GitHub**: https://github.com/rohitg00/agentmemory
 
-### webwright  (order=8)
-**Purpose**: State-of-the-art browser automation for AI agents. Gives the model
-a terminal to launch browser sessions, capture screenshots, inspect page state,
-and complete web tasks end-to-end as a single re-runnable Python script.
-No multi-agent system, no graph engine — just a terminal and a browser.
-**Install**: `pipx install webwright`
-
-### ponytail  (order=10, disabled by default)
+### ponytail  (order=10)
 **Purpose**: Code quality plugin — applies a YAGNI ladder before generating code
 (-54% LOC, -20% cost, 100% safe vs. baseline). Not a CLI binary; installs as an
 npm package that Claude Code, opencode, and Gemini CLI load as a plugin.
@@ -1293,7 +1407,25 @@ npm package that Claude Code, opencode, and Gemini CLI load as a plugin.
   - opencode: add `{ "plugin": ["@dietrichgebert/ponytail"] }` to `opencode.json`
   - Gemini CLI: `gemini extensions install https://github.com/DietrichGebert/ponytail`
 **GitHub**: https://github.com/DietrichGebert/ponytail
-Enable with `enabled=true` in tools.conf `[ponytail]` section.
+Enabled by default. Disable by setting `enabled=false` in tools.conf `[ponytail]` section.
+
+### OpenWiki  (order=11)
+**Purpose**: Writes and maintains an agent wiki for the codebase — architecture,
+workflows and quickstart docs that AI agents read for context.
+**Command**: `openwiki`
+**Data**: `.optimia/openwiki/` (symlinked as `openwiki/` at root — the upstream
+output path is hardcoded, the symlink redirects it into `.optimia/`)
+**Install**: `npm install -g openwiki`
+**GitHub**: https://github.com/langchain-ai/openwiki
+
+| Subcommand | When to use |
+|---|---|
+| `openwiki code --init` | First time in a project — generates the wiki |
+| `openwiki code --update` | Refresh docs after code changes |
+| `openwiki -p "..."` | One-shot non-interactive question |
+
+Start with `openwiki/quickstart.md` (i.e. `.optimia/openwiki/quickstart.md`)
+when exploring a repo that already has a wiki.
 
 ---
 
@@ -1402,13 +1534,20 @@ ensure_config() {
     [[ -f "$OPTIMIA_GLOBAL_FILE" ]] || write_default_global
     [[ -f "$OPTIMIA_TOOLS_FILE"  ]] || write_default_tools
     [[ -f "$OPTIMIA_AGENTS_FILE" ]] || write_default_agents
-    chmod 600 "$OPTIMIA_GLOBAL_FILE" "$OPTIMIA_TOOLS_FILE" "$OPTIMIA_AGENTS_FILE"
+    [[ -f "$OPTIMIA_UPDATE_FILE" ]] || touch "$OPTIMIA_UPDATE_FILE"
+    chmod 600 "$OPTIMIA_GLOBAL_FILE" "$OPTIMIA_TOOLS_FILE" "$OPTIMIA_AGENTS_FILE" "$OPTIMIA_UPDATE_FILE"
 
     # ── Migrations (idempotent) ───────────────────────────────────────────────
 
     # v0.2.0: ask_quick_questions key in global config
     kv_get "$OPTIMIA_GLOBAL_FILE" "ask_quick_questions" "" \
         | grep -q . || kv_set "$OPTIMIA_GLOBAL_FILE" "ask_quick_questions" "true"
+
+    # v0.2.6: self-update check keys in global config
+    kv_get "$OPTIMIA_GLOBAL_FILE" "check_updates" "" \
+        | grep -q . || kv_set "$OPTIMIA_GLOBAL_FILE" "check_updates" "true"
+    kv_get "$OPTIMIA_GLOBAL_FILE" "update_check_interval_days" "" \
+        | grep -q . || kv_set "$OPTIMIA_GLOBAL_FILE" "update_check_interval_days" "1"
 
     # v0.2.0: GitHub Copilot CLI
     _tools_append_section "copilot" \
@@ -1444,6 +1583,17 @@ post_install_note=To enable ponytail in Claude Code, run inside Claude Code:\n  
     # opencode is published as opencode-ai.
     _tools_ini_set "headroom" "install_hint" "pipx install headroom-ai[all]"
     _tools_ini_set "opencode" "install_hint" "npm install -g opencode-ai"
+
+    # v0.2.5: openwiki (agent wiki for the codebase — stored in .optimia/openwiki)
+    _tools_append_section "openwiki" \
+"[openwiki]
+command=openwiki
+description=Agent wiki — auto-generated codebase docs (langchain-ai)
+order=11
+enabled=true
+ai_tool=false
+install_hint=npm install -g openwiki
+post_install_note=To generate the wiki, run inside the repo:\n  openwiki code --init\nDocs are stored in .optimia/openwiki/ (symlinked as openwiki/ at root)"
 }
 
 # Updates a key inside a specific [section] of tools.conf.
@@ -1919,6 +2069,7 @@ ${BOLD}GLOBAL CONFIG${NC}  ${OPTIMIA_CONFIG_DIR}/
 
 ${BOLD}PROJECT LOCAL${NC}  .optimia/  (gitignored, new layout)
   .codegraph/          CodeGraph database
+  openwiki/            OpenWiki docs (if openwiki is installed)
   session.md           Session context from quick questions
   CLAUDE.md            Session context formatted for Claude Code
 
@@ -1941,6 +2092,7 @@ main() {
     ensure_config
     check_platform
     print_banner
+    check_for_updates
 
     local repo_conf
     repo_conf=$(repo_conf_file)

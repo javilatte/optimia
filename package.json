@@ -1,6 +1,6 @@
 {
   "name": "@javilatte/optimia",
-  "version": "0.2.4",
+  "version": "0.2.6",
   "description": "AI tool orchestrator — launches claude/opencode/gemini with codegraph and headroom per repository",
   "license": "MIT",
   "author": "Javier <ai@jagoan.es>",

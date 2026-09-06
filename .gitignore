@@ -3,6 +3,9 @@ optimia_*_all/
 node_modules/
 /.optimia
 /.codegraph
+/.tokensave
+.DS_Store
+/docs
 
 # AI assistant config
 .claude/

@@ -35,6 +35,23 @@ _tools_list() {
     echo "$output" | grep "ponytail" | grep -q "not installed"
 }
 
+# ── openwiki ───────────────────────────────────────────────────────────────────
+
+@test "tools list: openwiki appears in output" {
+    run _tools_list
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"openwiki"* ]]
+}
+
+@test "migration: openwiki section is added to a pre-0.2.5 tools.conf" {
+    mkdir -p "$TMPDIR_CONFIG/optimia"
+    printf '[claude]\ncommand=claude\nenabled=true\nai_tool=true\n' \
+        > "$TMPDIR_CONFIG/optimia/tools.conf"
+    run _tools_list
+    [ "$status" -eq 0 ]
+    grep -q "^\[openwiki\]" "$TMPDIR_CONFIG/optimia/tools.conf"
+}
+
 # ── both tools in the same run ─────────────────────────────────────────────────
 
 @test "tools list: contains all expected tools in one run" {
@@ -44,4 +61,5 @@ _tools_list() {
     [[ "$output" == *"headroom"*    ]]
     [[ "$output" == *"codegraph"*   ]]
     [[ "$output" == *"ponytail"*    ]]
+    [[ "$output" == *"openwiki"*    ]]
 }

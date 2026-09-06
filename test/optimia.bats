@@ -349,3 +349,16 @@ _update_tmp_dir() {
     ! grep -q "safe_install" "$calllog"
     rm -rf "$dir"
 }
+
+# ── ask_choice ───────────────────────────────────────────────────────────────────
+
+@test "ask_choice: returns the picked option on valid input" {
+    run bash -c 'export OPTIMIA_SOURCED=1; source "'"${BATS_TEST_DIRNAME}"'/../bin/optimia"; ask_choice "pick" a b c <<< "2" 2>/dev/null'
+    [ "$status" -eq 0 ]
+    [ "$output" = "b" ]
+}
+
+@test "ask_choice: exits instead of spinning forever on EOF" {
+    run bash -c 'export OPTIMIA_SOURCED=1; source "'"${BATS_TEST_DIRNAME}"'/../bin/optimia"; ask_choice "pick" a b c </dev/null'
+    [ "$status" -ne 0 ]
+}

@@ -1,65 +1,68 @@
 #!/usr/bin/env bats
 
-# Integration tests: run the real `optimia tools list` command against a
-# fresh temp config dir so we exercise ensure_config + write_default_tools
-# + cmd_tools end-to-end.
+# End-to-end integration: run the real `bin/optimia` launcher against a fresh
+# project and exercise its HTTP API for real (no mocked server).
+
+OPTIMIA_BIN="${BATS_TEST_DIRNAME}/../bin/optimia"
 
 setup() {
-    export TMPDIR_CONFIG; TMPDIR_CONFIG=$(mktemp -d)
-    # Redirect config to an isolated temp dir via XDG_CONFIG_HOME
-    export XDG_CONFIG_HOME="$TMPDIR_CONFIG"
+    TESTDIR=$(mktemp -d)
+    cd "$TESTDIR"
+    git init -q
+    git config user.email test@test.com
+    git config user.name test
+    echo hola > README.md
+    git add README.md
+    git commit -q -m init
+
+    node "$OPTIMIA_BIN" < /dev/null > server.log 2>&1 &
+    SERVER_PID=$!
+    PORT=""
+    for i in $(seq 1 50); do
+        PORT=$(grep -oE 'http://127\.0\.0\.1:[0-9]+' server.log | head -1 | grep -oE '[0-9]+$' || true)
+        [ -n "$PORT" ] && break
+        sleep 0.1
+    done
 }
 
 teardown() {
-    rm -rf "$TMPDIR_CONFIG"
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+    rm -rf "$TESTDIR"
 }
 
-_tools_list() {
-    env -u OPTIMIA_SOURCED XDG_CONFIG_HOME="$TMPDIR_CONFIG" \
-        bash "${BATS_TEST_DIRNAME}/../bin/optimia" tools list 2>&1
-}
-
-# ── ponytail ───────────────────────────────────────────────────────────────────
-
-@test "tools list: ponytail appears in output" {
-    run _tools_list
+@test "GET /api/health: reports ok and the project root" {
+    [ -n "$PORT" ]
+    run node -e "fetch('http://127.0.0.1:$PORT/api/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d)))"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"ponytail"* ]]
+    [[ "$output" == *'"ok":true'* ]]
+    [[ "$output" == *"$TESTDIR"* ]]
 }
 
-@test "tools list: ponytail shows [not installed] when npm package missing" {
-    run _tools_list
-    if npm list -g --depth=0 @dietrichgebert/ponytail &>/dev/null 2>&1; then
-        skip "@dietrichgebert/ponytail is installed on this machine"
-    fi
-    echo "$output" | grep "ponytail" | grep -q "not installed"
-}
-
-# ── openwiki ───────────────────────────────────────────────────────────────────
-
-@test "tools list: openwiki appears in output" {
-    run _tools_list
+@test "GET /: serves the real web UI (index.html)" {
+    [ -n "$PORT" ]
+    run node -e "fetch('http://127.0.0.1:$PORT/').then(r=>r.text()).then(t=>console.log(t.includes('<title>optimia</title>')))"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"openwiki"* ]]
+    [[ "$output" == "true" ]]
 }
 
-@test "migration: openwiki section is added to a pre-0.2.5 tools.conf" {
-    mkdir -p "$TMPDIR_CONFIG/optimia"
-    printf '[claude]\ncommand=claude\nenabled=true\nai_tool=true\n' \
-        > "$TMPDIR_CONFIG/optimia/tools.conf"
-    run _tools_list
+@test "GET /api/settings: returns default settings for a project with no settings.json yet" {
+    [ -n "$PORT" ]
+    run node -e "fetch('http://127.0.0.1:$PORT/api/settings').then(r=>r.json()).then(d=>console.log(JSON.stringify(d)))"
     [ "$status" -eq 0 ]
-    grep -q "^\[openwiki\]" "$TMPDIR_CONFIG/optimia/tools.conf"
+    [[ "$output" == *'"mode":"claude"'* ]]
 }
 
-# ── both tools in the same run ─────────────────────────────────────────────────
-
-@test "tools list: contains all expected tools in one run" {
-    run _tools_list
+@test "GET /api/tasks: returns an empty list for a fresh project" {
+    [ -n "$PORT" ]
+    run node -e "fetch('http://127.0.0.1:$PORT/api/tasks').then(r=>r.json()).then(d=>console.log(JSON.stringify(d)))"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"claude"*      ]]
-    [[ "$output" == *"headroom"*    ]]
-    [[ "$output" == *"codegraph"*   ]]
-    [[ "$output" == *"ponytail"*    ]]
-    [[ "$output" == *"openwiki"*    ]]
+    [[ "$output" == "[]" ]]
+}
+
+@test "GET /api/local-models: returns a real array (Ollama's own models, or empty if not installed)" {
+    [ -n "$PORT" ]
+    run node -e "fetch('http://127.0.0.1:$PORT/api/local-models').then(r=>r.json()).then(d=>console.log(JSON.stringify(Array.isArray(d))))"
+    [ "$status" -eq 0 ]
+    [[ "$output" == "true" ]]
 }

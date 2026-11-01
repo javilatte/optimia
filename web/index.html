@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="es" data-glass>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>optimia</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-actions">
+      <button class="icon-button" id="settings-button" title="Ajustes">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      </button>
+      <button class="icon-button" id="terminal-button" title="Terminal">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/><path d="M13 15h4"/></svg>
+      </button>
+    </div>
+    <span class="status-dot offline" id="connection-status" role="status" aria-label="Conectando..." title="Conectando..."></span>
+    <div class="topbar-title">
+      <span class="topbar-project" id="project-label">proyecto</span>
+      <span class="topbar-mode" id="mode-label">Claude Code</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <section class="panel" id="chat-panel">
+      <div class="panel-header">
+        <span>Chat with Claude</span>
+      </div>
+      <div class="chat-tabs" id="chat-tabs">
+        <button class="chat-tab-new" id="chat-new-button" title="Nuevo chat">+</button>
+      </div>
+      <div id="chat-log"></div>
+      <div class="thinking-orb" id="thinking-orb" hidden></div>
+      <div class="chat-input-area">
+        <div class="chat-attachments" id="chat-attachments" hidden></div>
+        <div class="skill-suggest" id="skill-suggest" role="listbox" hidden></div>
+        <div class="chat-input-row">
+          <textarea id="chat-input" rows="1" placeholder="Envía un mensaje o arrastra una imagen"></textarea>
+          <button class="send-button" id="send-button" disabled>Enviar</button>
+        </div>
+        <div class="chat-meta-row">
+          <label for="chat-kind-select" class="muted">Modo</label>
+          <select id="chat-kind-select">
+            <option value="chat">Chat</option>
+            <option value="coding">Código</option>
+            <option value="documentation">Documentación</option>
+          </select>
+          <label for="chat-model-select" class="muted">Modelo</label>
+          <select id="chat-model-select"></select>
+          <select id="task-base-select" class="task-only" hidden title="Rama base de la que sale la tarea"></select>
+          <input type="text" id="task-branch-input" class="task-only" hidden placeholder="rama (auto)" title="Nombre de la rama de la tarea; vacio = optimia/task-xxxx" spellcheck="false">
+          <label for="model-select" class="muted">Effort</label>
+          <select id="model-select">
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="default">Default</option>
+          </select>
+          <span class="muted">Enter envia · Shift+Enter nueva linea</span>
+        </div>
+      </div>
+    </section>
+
+    <div class="layout-splitter" id="layout-splitter" role="separator" aria-orientation="vertical" title="Arrastra para cambiar el ancho. Doble clic para restablecer."></div>
+
+    <section class="panel" id="tasks-panel">
+      <div class="panel-header agents-panel-header">
+        <span class="clock" id="clock"></span>
+        <span class="agents-title">Coding and documentation agents</span>
+      </div>
+      <div class="kanban">
+        <div class="kanban-col">
+          <div class="kanban-col-header">Tasks on progress</div>
+          <div class="kanban-cards" id="col-in_progress"></div>
+        </div>
+        <div class="kanban-col">
+          <div class="kanban-col-header">Ready to review &amp; ship</div>
+          <div class="kanban-cards" id="col-ready_to_test"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="modal-overlay" id="terminal-overlay" hidden>
+    <div class="modal terminal-modal">
+      <div class="settings-content-header">
+        <button class="icon-button" id="terminal-close" title="Volver">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+        </button>
+        <span>Terminal</span>
+      </div>
+      <div id="terminal-mount"></div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="settings-overlay" hidden>
+    <div class="modal">
+      <nav class="settings-nav">
+        <div class="settings-nav-group">AI</div>
+        <button class="settings-nav-item active" data-pane="claude">Claude</button>
+        <button class="settings-nav-item" data-pane="local-ai">IA local</button>
+        <div class="settings-nav-group">Preferences</div>
+        <button class="settings-nav-item" data-pane="appearance">Apariencia</button>
+        <button class="settings-nav-item" data-pane="instructions">Instructions</button>
+        <button class="settings-nav-item" data-pane="memory">Memory</button>
+        <button class="settings-nav-item" data-pane="nogo">No-go</button>
+        <button class="settings-nav-item" data-pane="skills">Skills</button>
+      </nav>
+      <div class="settings-content">
+        <div class="settings-content-header">
+          <button class="icon-button" id="settings-close" title="Volver">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+          </button>
+          <span id="settings-pane-title">Claude</span>
+        </div>
+        <div class="settings-pane-body">
+
+          <section class="settings-pane" data-pane="claude">
+            <div class="settings-field">
+              <label>Cuenta</label>
+              <div id="claude-account-info" class="account-box muted">Comprobando...</div>
+              <div class="account-actions">
+                <button class="icon-button" id="claude-account-switch">Cambiar cuenta</button>
+                <button class="icon-button" id="claude-account-refresh">Actualizar</button>
+              </div>
+              <div id="claude-account-switch-note" class="muted" hidden>Se abrio una terminal con "claude auth login". Completa el inicio de sesion ahi y pulsa Actualizar.</div>
+            </div>
+            <div class="settings-field">
+              <label for="setting-claude-model">Modelo</label>
+              <select id="setting-claude-model">
+                <option value="default">Default</option>
+                <option value="fable">fable</option>
+                <option value="opus">opus</option>
+                <option value="sonnet">sonnet</option>
+              </select>
+            </div>
+            <div class="settings-field">
+              <label for="setting-claude-effort">Effort</label>
+              <select id="setting-claude-effort">
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="default">Default</option>
+              </select>
+            </div>
+          </section>
+
+          <section class="settings-pane" data-pane="local-ai" hidden>
+            <div class="settings-field">
+              <label for="setting-local-url">URL</label>
+              <input type="text" id="setting-local-url" placeholder="http://localhost:11434" />
+            </div>
+            <div class="settings-field">
+              <label for="setting-local-model">Modelo</label>
+              <input type="text" id="setting-local-model" placeholder="llama3.1" />
+            </div>
+            <div class="settings-field">
+              <label for="setting-local-auth">Auth header</label>
+              <input type="text" id="setting-local-auth" placeholder="Authorization: Bearer ..." />
+            </div>
+          </section>
+
+          <section class="settings-pane" data-pane="appearance" hidden>
+            <div class="settings-field">
+              <label for="setting-ui-theme">Tema</label>
+              <select id="setting-ui-theme">
+                <option value="system">Sistema</option>
+                <option value="light">Claro</option>
+                <option value="dark">Oscuro</option>
+              </select>
+            </div>
+            <div class="settings-field">
+              <label for="setting-ui-clock">Reloj del panel de agentes</label>
+              <select id="setting-ui-clock">
+                <option value="datetime">Fecha y hora</option>
+                <option value="time">Solo hora</option>
+              </select>
+            </div>
+          </section>
+
+          <section class="settings-pane" data-pane="instructions" hidden>
+            <div id="instructions-migration-banner" class="migration-banner" hidden></div>
+            <div class="settings-field">
+              <label for="setting-instructions">Instrucciones (se anaden al system prompt de cada sesion)</label>
+              <div class="ai-assist-row">
+                <input type="text" class="ai-assist-prompt" placeholder="Pide ayuda con IA..." />
+                <button class="icon-button ai-assist-button" data-field="instructions" data-target="setting-instructions" title="Ayuda con IA">IA</button>
+              </div>
+              <textarea id="setting-instructions" rows="10"></textarea>
+            </div>
+          </section>
+
+          <section class="settings-pane" data-pane="memory" hidden>
+            <div class="settings-field">
+              <label for="setting-memory">Memoria del proyecto (texto libre, persistido en .optimia/memory.md)</label>
+              <div class="ai-assist-row">
+                <input type="text" class="ai-assist-prompt" placeholder="Pide ayuda con IA..." />
+                <button class="icon-button ai-assist-button" data-field="memory" data-target="setting-memory" title="Ayuda con IA">IA</button>
+              </div>
+              <textarea id="setting-memory" rows="10"></textarea>
+            </div>
+          </section>
+
+          <section class="settings-pane" data-pane="nogo" hidden>
+            <div id="nogo-migration-banner" class="migration-banner" hidden></div>
+            <div class="settings-field">
+              <label>Archivos y comandos prohibidos (patrones estilo .claude/settings.json, ej. "Read(**/.env*)")</label>
+              <div id="nogo-list" class="nogo-list"></div>
+              <div class="ai-assist-row">
+                <input type="text" class="ai-assist-prompt" placeholder="Pide ayuda con IA..." />
+                <button class="icon-button ai-assist-button" data-field="nogo" data-target="nogo-input" title="Ayuda con IA">IA</button>
+              </div>
+              <div class="new-task-row" style="padding:0; border:none; margin-top:8px;">
+                <input type="text" id="nogo-input" placeholder='Bash(rm -rf *)' />
+                <button class="send-button" id="nogo-add">Anadir</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-pane" data-pane="skills" hidden>
+            <div class="settings-field">
+              <label>Skills instaladas (.claude/skills/)</label>
+              <div id="skills-list" class="skills-list"></div>
+              <div class="ai-assist-row">
+                <input type="text" class="ai-assist-prompt" placeholder="Pide ayuda con IA..." />
+                <button class="icon-button ai-assist-button" data-field="skills" data-target="skill-desc-input" title="Ayuda con IA">IA</button>
+              </div>
+              <div class="new-task-row" style="padding:0; border:none; margin-top:8px;">
+                <input type="text" id="skill-slug-input" placeholder="nombre-kebab-case" />
+                <input type="text" id="skill-desc-input" placeholder="Descripcion breve" />
+                <button class="send-button" id="skill-add">Crear</button>
+              </div>
+            </div>
+          </section>
+
+        </div>
+        <div class="settings-footer">
+          <span class="muted" id="settings-save-status"></span>
+          <button class="send-button" id="settings-save">Guardar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "https://esm.sh/react@18.3.1",
+      "react/jsx-runtime": "https://esm.sh/react@18.3.1/jsx-runtime",
+      "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+      "thinking-orbs": "https://esm.sh/thinking-orbs@0.3.2?external=react"
+    }
+  }
+  </script>
+  <script type="module" src="orb.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.11.0/lib/addon-fit.js"></script>
+  <script src="app.js"></script>
+  <script src="terminal.js"></script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 {
   "name": "@javilatte/optimia",
-  "version": "0.2.7",
-  "description": "AI tool orchestrator — launches claude/opencode/gemini with codegraph and headroom per repository",
+  "version": "1.0.0",
+  "description": "Local web app for Claude Code and local AI — launches a project dashboard backed by codegraph",
   "license": "MIT",
   "author": "Javier <ai@jagoan.es>",
   "homepage": "https://github.com/javilatte/optimia",
@@ -12,11 +12,9 @@
   "keywords": [
     "ai",
     "claude",
-    "opencode",
+    "claude-code",
+    "local-ai",
     "codegraph",
-    "headroom",
-    "agentmemory",
-    "webwright",
     "cli",
     "developer-tools"
   ],
@@ -24,16 +22,29 @@
     "optimia": "bin/optimia"
   },
   "files": [
-    "bin/optimia"
+    "bin/optimia",
+    "server",
+    "web"
   ],
   "engines": {
-    "node": ">=14"
+    "node": ">=18"
   },
   "scripts": {
-    "test": "bats test/",
-    "prepublishOnly": "bats test/"
+    "test": "node --test && bats test/",
+    "test:unit": "node --test",
+    "test:bats": "bats test/",
+    "prepublishOnly": "node --test && bats test/"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "node-pty": "^1.1.0",
+    "ws": "^8.18.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "bats": "^1.11.1"
+  },
+  "allowScripts": {
+    "node-pty@1.1.0": true
   }
 }

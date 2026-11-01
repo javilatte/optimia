@@ -108,6 +108,7 @@
         <button class="settings-nav-item" data-pane="memory">Memory</button>
         <button class="settings-nav-item" data-pane="nogo">No-go</button>
         <button class="settings-nav-item" data-pane="skills">Skills</button>
+        <button class="settings-nav-item" data-pane="registro">Registro</button>
       </nav>
       <div class="settings-content">
         <div class="settings-content-header">
@@ -218,6 +219,23 @@
                 <button class="send-button" id="nogo-add">Anadir</button>
               </div>
             </div>
+          </section>
+
+          <section class="settings-pane" data-pane="registro" hidden>
+            <div class="settings-field">
+              <label for="log-filter">Eventos del proyecto (.optimia/logs/optimia.log)</label>
+              <div class="log-toolbar">
+                <input type="text" id="log-filter" placeholder="Filtrar por evento, tarea o fichero" spellcheck="false" />
+                <button class="icon-button" id="log-refresh">Actualizar</button>
+              </div>
+            </div>
+            <div class="log-chips" id="log-chips">
+              <button class="log-chip on" data-cat="todo">Todo</button>
+              <button class="log-chip" data-cat="archivos">Cambios en archivos</button>
+              <button class="log-chip" data-cat="preguntas">Preguntas</button>
+              <button class="log-chip" data-cat="respuestas">Respuestas</button>
+            </div>
+            <div class="log-list" id="log-list"></div>
           </section>
 
           <section class="settings-pane" data-pane="skills" hidden>

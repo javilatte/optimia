@@ -14,8 +14,19 @@ const { PtySession } = require('./bridge/ptySession');
 const { syncClaudeSettings } = require('./bridge/claudeSettingsSync');
 const { buildMigrationPreview, applyMigration } = require('./migrate/legacyImport');
 const { buildSessionOptions } = require('./bridge/sessionOptions');
-const { createTaskWorktree, stageForReview, removeTaskWorktree, listLocalBranches, branchNameProblem, commitTaskWorktree, worktreeIsClean, mergeTaskBranch } = require('./bridge/worktree');
+const { createTaskWorktree, stageForReview, removeTaskWorktree, listLocalBranches, branchNameProblem, commitTaskWorktree, worktreeIsClean, mergeTaskBranch, filesChangedBy, changedFiles } = require('./bridge/worktree');
 const { pickFile } = require('./bridge/filePicker');
+const logger = require('./bridge/logger');
+
+const FILE_TOOLS = new Set(['Edit', 'MultiEdit', 'Write']);
+// Texto de preguntas y respuestas que se guarda en el registro, recortado.
+const cut = (text, n = 500) => (typeof text !== 'string' ? null : text.length > n ? `${text.slice(0, n)}…` : text);
+// Ruta relativa a la base del proyecto o del worktree, para que el registro no
+// dependa de la carpeta donde está el repo del usuario.
+function relPath(base, p) {
+  if (typeof p !== 'string' || !p) return null;
+  return path.isAbsolute(p) ? path.relative(base, p) : p;
+}
 const { ensureGitGuardHooks } = require('./bridge/gitGuard');
 const { listFilesModifiedSince, resolveInside, readPreview, openWithSystem } = require('./bridge/taskFiles');
 const { STAGE_PHASE, firstStage, stageTools, stageDisallowed, approvalRule, canRun, buildStagePrompt, answerPrompt, decideAfterStage } = require('./bridge/taskStages');
@@ -249,9 +260,11 @@ function createApp(projectRoot, { onTaskCreated, onTaskUpdated, onTaskDeleted, o
       try {
         removeTaskWorktree(projectRoot, task);
       } catch (err) {
+        logger.error('task.delete_failed', { taskId, error: err.message });
         return sendJson(res, 500, { error: `no se pudo limpiar el worktree: ${err.message}` });
       }
       deleteTask(projectRoot, taskId);
+      logger.info('task.delete', { taskId, branch: task.branch });
       return sendJson(res, 200, { ok: true });
     }
 
@@ -300,8 +313,10 @@ function createApp(projectRoot, { onTaskCreated, onTaskUpdated, onTaskDeleted, o
       try {
         sha = commitTaskWorktree(task.worktreePath, message, task.outputFiles || []);
       } catch (err) {
+        logger.warn('task.commit_failed', { taskId, error: err.message });
         return sendJson(res, 409, { error: `no se pudo hacer commit: ${err.message}` });
       }
+      logger.info('task.commit', { taskId, sha, files: filesChangedBy(task.worktreePath, sha) });
       return sendJson(res, 200, updateTask(projectRoot, taskId, { lastCommit: sha, lastCommitMessage: message }));
     }
 
@@ -316,9 +331,16 @@ function createApp(projectRoot, { onTaskCreated, onTaskUpdated, onTaskDeleted, o
       try {
         sha = mergeTaskBranch(projectRoot, task.branch, task.baseBranch, `Merge ${task.branch} en ${task.baseBranch}`);
       } catch (err) {
+        logger.warn('task.merge_failed', { taskId, error: err.message });
         return sendJson(res, 409, { error: err.message });
       }
+      logger.info('task.merge', { taskId, into: task.baseBranch, sha, files: filesChangedBy(projectRoot, sha) });
       return sendJson(res, 200, updateTask(projectRoot, taskId, { mergedInto: task.baseBranch, mergeCommit: sha, mergedAt: new Date().toISOString() }));
+    }
+
+    if (url.pathname === '/api/logs' && req.method === 'GET') {
+      const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 200));
+      return sendJson(res, 200, logger.readRecent(limit));
     }
 
     if (url.pathname === '/api/pick-file' && req.method === 'POST') {
@@ -378,6 +400,7 @@ function createApp(projectRoot, { onTaskCreated, onTaskUpdated, onTaskDeleted, o
 }
 
 function start({ projectRoot = process.cwd(), port = 0, open = true } = {}) {
+  logger.initLogger(projectRoot);
   const server = http.createServer();
   const wss = new WebSocketServer({ server, path: '/ws' });
 
@@ -413,6 +436,7 @@ function start({ projectRoot = process.cwd(), port = 0, open = true } = {}) {
     // generic claude_exit broadcast races with terminal_handoff and the chat
     // shows a confusing "session ended" message right on top of the handoff.
     session._handoffInProgress = true;
+    logger.warn('handoff.terminal', { scope, id, tool: event.tool_name });
     session.kill();
     sessionsMap.delete(id);
     startOrGetTerminalSession(session.sessionId, { scope, id });
@@ -440,6 +464,7 @@ function start({ projectRoot = process.cwd(), port = 0, open = true } = {}) {
         worktreeDir = worktree.dir;
         branch = worktree.branch;
       } catch (err) {
+        logger.error('task.worktree_error', { taskId: task.id, error: err.message });
         updateTask(projectRoot, task.id, { status: 'pending', error: `no se pudo crear el worktree: ${err.message}` });
         return { error: `no se pudo crear el worktree: ${err.message}`, code: 500 };
       }
@@ -467,6 +492,8 @@ function start({ projectRoot = process.cwd(), port = 0, open = true } = {}) {
     const session = new ClaudeSession(opts);
     taskSessions.set(taskId, session);
     updateTaskPhase(projectRoot, taskId, STAGE_PHASE[stage], 'active');
+    logger.info('task.stage.start', { taskId, stage, branch, resumed: resuming });
+    if (answer !== undefined) logger.info('task.answer', { taskId, stage, text: cut(answer) });
     const started = updateTask(projectRoot, taskId, {
       stage,
       status: 'in_progress',
@@ -488,6 +515,9 @@ function start({ projectRoot = process.cwd(), port = 0, open = true } = {}) {
       if (event.type === 'assistant') {
         for (const block of event.message?.content || []) {
           if (block.type === 'tool_use') toolUses.set(block.id, { name: block.name, input: block.input });
+          if (block.type === 'tool_use' && FILE_TOOLS.has(block.name)) {
+            logger.info('file.edit', { scope: 'task', taskId, stage, tool: block.name, path: relPath(worktreeDir, block.input?.file_path) });
+          }
         }
       }
       if (event.type === 'result') finishTaskStage(taskId, stage, worktreeDir, session, event);
@@ -506,6 +536,7 @@ function start({ projectRoot = process.cwd(), port = 0, open = true } = {}) {
         const rule = tool === 'Bash' ? null : approvalRule(tool);
         const approvedNow = loadSettings(projectRoot).preferences.approvedTools || [];
         const alreadyApproved = rule !== null && approvedNow.includes(rule);
+        logger.warn('task.stage.denied', { taskId, stage, tool, alreadyApproved });
         const current = updateTask(projectRoot, taskId, {
           status: 'pending',
           error: tool === 'Bash'
@@ -518,7 +549,10 @@ function start({ projectRoot = process.cwd(), port = 0, open = true } = {}) {
         if (current) broadcast({ type: 'task_updated', task: current });
       }
     });
-    session.on('error', (err) => broadcast({ type: 'task_error', taskId, error: err.message }));
+    session.on('error', (err) => {
+      logger.error('task.session_error', { taskId, stage, error: err.message });
+      broadcast({ type: 'task_error', taskId, error: err.message });
+    });
     session.on('exit', () => {
       if (taskSessions.get(taskId) === session) taskSessions.delete(taskId);
       if (session._stageDone) return;
@@ -529,6 +563,7 @@ function start({ projectRoot = process.cwd(), port = 0, open = true } = {}) {
     });
 
     session._startedAt = Date.now();
+    logger.info('claude.session.spawn', { scope: 'task', taskId, stage, sessionId: session.sessionId });
     session.send(prompt);
     return { task: started };
   }
@@ -548,6 +583,7 @@ function start({ projectRoot = process.cwd(), port = 0, open = true } = {}) {
       settings.preferences.approvedTools = [...approved, rule];
       saveSettings(projectRoot, settings);
     }
+    logger.info('task.approve', { taskId, rule });
     return runTaskStage(taskId, { stage: task.stage });
   }
 
@@ -574,10 +610,14 @@ function start({ projectRoot = process.cwd(), port = 0, open = true } = {}) {
       phaseStatus,
       isError: event.is_error === true
     });
+    const touched = changedFiles(worktreeDir);
+    logger.info('file.stage_changes', { taskId, stage, files: touched.slice(0, 200), total: touched.length });
     const outputFiles = listFilesModifiedSince(worktreeDir, session._startedAt || 0);
     const knownFiles = new Set(current.outputFiles || []);
     for (const f of outputFiles) knownFiles.add(f);
+    if (patch.pendingQuestion) logger.info('task.question', { taskId, stage, kind: patch.pendingQuestion.kind, text: cut(patch.pendingQuestion.text) });
     const updated = updateTask(projectRoot, taskId, { ...patch, outputFiles: [...knownFiles].sort() });
+    logger.info('task.stage.finish', { taskId, stage, status: updated?.status, hasChanges, outputFiles: knownFiles.size, error: patch.error || null });
     broadcast({ type: 'task_updated', task: updated });
 
     if (next) {
@@ -609,11 +649,20 @@ function start({ projectRoot = process.cwd(), port = 0, open = true } = {}) {
 
     const session = new ClaudeSession(opts);
     chatSessions.set(chatId, session);
+    logger.info('claude.session.spawn', { scope: 'chat', chatId, sessionId: session.sessionId, resumed: Boolean(chat.claudeSessionId) });
     if (!chat.claudeSessionId) {
       updateChatMeta(projectRoot, chatId, { claudeSessionId: session.sessionId });
     }
 
     session.on('event', (event) => {
+      for (const block of event.message?.content || []) {
+        if (event.type === 'assistant' && block.type === 'text' && block.text?.trim()) {
+          logger.info('chat.reply', { chatId, text: cut(block.text) });
+        }
+        if (event.type === 'assistant' && block.type === 'tool_use' && FILE_TOOLS.has(block.name)) {
+          logger.info('file.edit', { scope: 'chat', chatId, tool: block.name, path: relPath(projectRoot, block.input?.file_path) });
+        }
+      }
       appendMessage(projectRoot, chatId, { role: 'claude_event', event, ts: new Date().toISOString() });
       broadcast({ type: 'claude_event', chatId, event });
       watchForPermissionHandoff('chat', chatId, session, chatSessions, event);
@@ -622,6 +671,7 @@ function start({ projectRoot = process.cwd(), port = 0, open = true } = {}) {
     session.on('stderr', (text) => broadcast({ type: 'claude_stderr', chatId, text }));
     session.on('exit', (info) => {
       if (chatSessions.get(chatId) === session) chatSessions.delete(chatId);
+      logger.info('claude.session.exit', { scope: 'chat', chatId, code: info?.code ?? null, signal: info?.signal ?? null, stopped: Boolean(session._stopRequested) });
       // A handoff-triggered kill is not a real end of the conversation (see
       // watchForPermissionHandoff) — terminal_handoff already told the chat
       // what's happening, so skip the generic "session ended" broadcast. The
@@ -638,6 +688,7 @@ function start({ projectRoot = process.cwd(), port = 0, open = true } = {}) {
     const session = chatSessions.get(chatId);
     if (!session) return false;
     session._stopRequested = true;
+    logger.info('chat.stop', { chatId });
     session.kill();
     chatSessions.delete(chatId);
     return true;
@@ -713,7 +764,16 @@ function start({ projectRoot = process.cwd(), port = 0, open = true } = {}) {
     onTaskDeleted: killTaskSession,
     onChatDeleted: killChatSession
   });
-  server.on('request', app);
+  server.on('request', (req, res) => {
+    const started = Date.now();
+    res.on('finish', () => {
+      const pathname = new URL(req.url, 'http://localhost').pathname;
+      if (pathname.startsWith('/api/')) {
+        logger.info('http.request', { method: req.method, path: pathname, status: res.statusCode, ms: Date.now() - started });
+      }
+    });
+    app(req, res);
+  });
 
   wss.on('connection', (ws) => {
     ws.on('message', (raw) => {
@@ -772,6 +832,7 @@ function start({ projectRoot = process.cwd(), port = 0, open = true } = {}) {
         if (!session) return ws.send(JSON.stringify({ type: 'client_error', error: 'chat not found' }));
 
         appendMessage(projectRoot, msg.chatId, { role: 'user', text: msg.text, images: msg.images || [], ts: new Date().toISOString() });
+        logger.info('chat.user', { chatId: msg.chatId, text: cut(msg.text), images: (msg.images || []).length });
         // El primer mensaje da nombre al chat; despues el nombre se queda fijo.
         const chatNow = loadChat(projectRoot, msg.chatId);
         const firstLine = (msg.text || '').split('\n').map((l) => l.trim()).find(Boolean) || '';
@@ -798,6 +859,7 @@ function start({ projectRoot = process.cwd(), port = 0, open = true } = {}) {
       const url = `http://127.0.0.1:${actualPort}`;
       writeMcpConfig(projectRoot, actualPort);
       console.log(`optimia running at ${url} (project: ${projectRoot})`);
+      logger.info('server.start', { url, port: actualPort, projectRoot });
       if (open) openInBrowser(url);
       resolve({ server, wss, url, port: actualPort });
     });

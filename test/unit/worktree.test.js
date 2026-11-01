@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { mkTmpDir, rmTmpDir } = require('./helpers');
-const { createTaskWorktree, stageForReview, worktreeDir, removeTaskWorktree, listLocalBranches, branchNameProblem, commitTaskWorktree, mergeTaskBranch } = require('../../server/bridge/worktree');
+const { createTaskWorktree, stageForReview, worktreeDir, removeTaskWorktree, listLocalBranches, branchNameProblem, commitTaskWorktree, mergeTaskBranch, filesChangedBy, changedFiles } = require('../../server/bridge/worktree');
 
 function initGitRepo(dir) {
   execFileSync('git', ['init', '-q'], { cwd: dir });
@@ -153,4 +153,19 @@ test('mergeTaskBranch: se niega si la base esta checkeada con cambios sin commit
   execFileSync('git', ['checkout', '-q', 'fix/base'], { cwd: dir });
   fs.writeFileSync(path.join(dir, 'README.md'), 'cambio sin guardar\n');
   assert.throws(() => mergeTaskBranch(dir, 'fix/tarea-y', 'fix/base', 'm'), /cambios sin commitear/);
+});
+
+test('filesChangedBy y changedFiles: listan los ficheros de un commit y los pendientes', (t) => {
+  const dir = mkTmpDir('worktree-files');
+  t.after(() => rmTmpDir(dir));
+  initGitRepo(dir);
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'a\n');
+  fs.writeFileSync(path.join(dir, 'b.txt'), 'b\n');
+  execFileSync('git', ['add', 'a.txt', 'b.txt'], { cwd: dir });
+  execFileSync('git', ['commit', '-q', '-m', 'dos ficheros'], { cwd: dir });
+  const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+  assert.deepEqual(filesChangedBy(dir, sha).sort(), ['a.txt', 'b.txt']);
+
+  fs.writeFileSync(path.join(dir, 'c.txt'), 'c\n');
+  assert.deepEqual(changedFiles(dir), ['c.txt']);
 });

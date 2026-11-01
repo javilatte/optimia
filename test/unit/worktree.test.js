@@ -122,10 +122,35 @@ test('tareas: salen de la rama base elegida, con su propia rama, y se fusionan e
   assert.ok(fs.existsSync(path.join(dir, 'boton.css')));
 });
 
-test('mergeTaskBranch: se niega si el checkout principal no esta en la base', (t) => {
-  const dir = mkTmpDir('worktree-merge-guard');
+test('mergeTaskBranch: fusiona aunque el checkout principal este en otra rama, y no lo cambia', (t) => {
+  const dir = mkTmpDir('worktree-merge-temp');
   t.after(() => rmTmpDir(dir));
   initGitRepo(dir);
-  execFileSync('git', ['checkout', '-q', '-b', 'otra-rama'], { cwd: dir });
-  assert.throws(() => mergeTaskBranch(dir, 'x', 'fix/rebranding', 'm'), /Cambia a "fix\/rebranding"/);
+  execFileSync('git', ['branch', 'fix/base'], { cwd: dir });
+  execFileSync('git', ['checkout', '-q', '-b', 'fix/tarea-x', 'fix/base'], { cwd: dir });
+  fs.writeFileSync(path.join(dir, 'x.txt'), 'x\n');
+  execFileSync('git', ['add', 'x.txt'], { cwd: dir });
+  execFileSync('git', ['commit', '-q', '-m', 'x'], { cwd: dir });
+  execFileSync('git', ['checkout', '-q', 'main'], { cwd: dir });
+  const before = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+
+  mergeTaskBranch(dir, 'fix/tarea-x', 'fix/base', 'Merge fix/tarea-x en fix/base');
+
+  const after = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+  assert.equal(after, before);
+  assert.ok(execFileSync('git', ['show', 'fix/base:x.txt'], { cwd: dir, encoding: 'utf8' }).includes('x'));
+});
+
+test('mergeTaskBranch: se niega si la base esta checkeada con cambios sin commitear', (t) => {
+  const dir = mkTmpDir('worktree-merge-dirty');
+  t.after(() => rmTmpDir(dir));
+  initGitRepo(dir);
+  execFileSync('git', ['checkout', '-q', '-b', 'fix/base'], { cwd: dir });
+  execFileSync('git', ['checkout', '-q', '-b', 'fix/tarea-y'], { cwd: dir });
+  fs.writeFileSync(path.join(dir, 'y.txt'), 'y\n');
+  execFileSync('git', ['add', 'y.txt'], { cwd: dir });
+  execFileSync('git', ['commit', '-q', '-m', 'y'], { cwd: dir });
+  execFileSync('git', ['checkout', '-q', 'fix/base'], { cwd: dir });
+  fs.writeFileSync(path.join(dir, 'README.md'), 'cambio sin guardar\n');
+  assert.throws(() => mergeTaskBranch(dir, 'fix/tarea-y', 'fix/base', 'm'), /cambios sin commitear/);
 });

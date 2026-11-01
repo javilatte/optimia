@@ -98,23 +98,44 @@ function worktreeIsClean(worktreeDirPath) {
   return git(worktreeDirPath, ['status', '--porcelain']) === '';
 }
 
-// Fusiona la rama de la tarea en la base. La fusion ocurre en el checkout principal,
-// asi que exige que este esté en la base y sin cambios: no tocamos nada del usuario.
-function mergeTaskBranch(projectRoot, branch, targetBranch, message) {
-  const current = git(projectRoot, ['rev-parse', '--abbrev-ref', 'HEAD']);
-  if (current !== targetBranch) {
-    throw new Error(`el checkout principal esta en "${current}". Cambia a "${targetBranch}" para fusionar.`);
+// Ruta del worktree donde esta checkeada una rama, o null si no esta checkeada en ninguno.
+function worktreeOfBranch(projectRoot, branch) {
+  let current = null;
+  for (const line of git(projectRoot, ['worktree', 'list', '--porcelain']).split('\n')) {
+    if (line.startsWith('worktree ')) current = line.slice('worktree '.length);
+    else if (line === `branch refs/heads/${branch}`) return current;
   }
-  if (git(projectRoot, ['status', '--porcelain']) !== '') {
-    throw new Error('hay cambios sin commitear en el checkout principal; no se puede fusionar ahora');
-  }
+  return null;
+}
+
+function mergeAt(dir, branch, targetBranch, message) {
   try {
-    git(projectRoot, ['merge', '--no-ff', '-m', message, branch]);
+    git(dir, ['merge', '--no-ff', '-m', message, branch]);
   } catch (err) {
-    try { git(projectRoot, ['merge', '--abort']); } catch { /* no habia merge en curso */ }
+    try { git(dir, ['merge', '--abort']); } catch { /* no habia merge en curso */ }
     throw new Error(`conflictos al fusionar ${branch} en ${targetBranch}; resuelvelos a mano. ${err.message.split('\n')[0]}`);
   }
-  return git(projectRoot, ['rev-parse', 'HEAD']);
+  return git(dir, ['rev-parse', 'HEAD']);
+}
+
+// Fusiona la rama de la tarea en la base sin cambiar de rama en el checkout del usuario:
+// si la base esta checkeada en algun worktree, se fusiona ahi (exigiendo que este limpio);
+// si no, se usa un worktree temporal sobre la base que se borra al terminar.
+function mergeTaskBranch(projectRoot, branch, targetBranch, message) {
+  const checkedOutAt = worktreeOfBranch(projectRoot, targetBranch);
+  if (checkedOutAt) {
+    if (git(checkedOutAt, ['status', '--porcelain']) !== '') {
+      throw new Error(`hay cambios sin commitear en ${checkedOutAt}; no se puede fusionar en "${targetBranch}" ahora`);
+    }
+    return mergeAt(checkedOutAt, branch, targetBranch, message);
+  }
+  const tmp = path.join(projectRoot, '.optimia', 'merge-tmp', `${targetBranch.replace(/[^A-Za-z0-9]/g, '-')}-${Date.now()}`);
+  git(projectRoot, ['worktree', 'add', tmp, targetBranch]);
+  try {
+    return mergeAt(tmp, branch, targetBranch, message);
+  } finally {
+    try { git(projectRoot, ['worktree', 'remove', '--force', tmp]); } catch { /* ya borrado */ }
+  }
 }
 
 module.exports = {

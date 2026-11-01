@@ -138,7 +138,23 @@ function mergeTaskBranch(projectRoot, branch, targetBranch, message) {
   }
 }
 
+// Ficheros que cambia un commit (o una fusion, frente a su primer padre).
+function filesChangedBy(dir, sha) {
+  return git(dir, ['diff', '--name-only', `${sha}^1`, sha]).split('\n').filter(Boolean);
+}
+
+// Ficheros modificados, staged o sin seguimiento en un worktree ahora mismo.
+function changedFiles(dir) {
+  try {
+    return git(dir, ['status', '--porcelain', '--untracked-files=all'])
+      .split('\n').filter(Boolean).map((line) => line.slice(3));
+  } catch {
+    return [];
+  }
+}
+
 module.exports = {
   worktreeDir, createTaskWorktree, stageForReview, removeTaskWorktree,
-  listLocalBranches, branchNameProblem, commitTaskWorktree, worktreeIsClean, mergeTaskBranch
+  listLocalBranches, branchNameProblem, commitTaskWorktree, worktreeIsClean, mergeTaskBranch,
+  filesChangedBy, changedFiles
 };

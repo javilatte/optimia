@@ -2,6 +2,15 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.0.1] - 2026-11-01
+
+### Added
+- Registro por proyecto en `.optimia/logs/optimia.log` (JSON por línea, rotado a 5 MB): peticiones a la API, etapas de tareas, permisos denegados, cambios en archivos, commits, fusiones, preguntas y respuestas (texto recortado a 500 caracteres).
+- Pestaña "Registro" en Ajustes para consultarlo, con filtros por cambios en archivos, preguntas y respuestas.
+
+### Fixed
+- Fusionar una tarea ya no exige cambiar la rama del checkout principal: se hace en un worktree temporal sobre la rama base.
+
 ## [1.0.0] - 2026-10-31
 
 Reescritura completa del flujo de optimia. Cambio incompatible con versiones anteriores.

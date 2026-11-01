@@ -1,6 +1,6 @@
 {
   "name": "@javilatte/optimia",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Local web app for Claude Code and local AI — launches a project dashboard backed by codegraph",
   "license": "MIT",
   "author": "Javier <ai@jagoan.es>",

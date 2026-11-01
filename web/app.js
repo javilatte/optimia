@@ -1735,8 +1735,72 @@ settingsNavItems.forEach((item) => {
     const pane = item.dataset.pane;
     settingsPanes.forEach((p) => { p.hidden = p.dataset.pane !== pane; });
     settingsPaneTitle.textContent = item.textContent;
+    if (pane === 'registro') loadLogPane();
   });
 });
+
+const logList = document.getElementById('log-list');
+const logFilter = document.getElementById('log-filter');
+const logRefresh = document.getElementById('log-refresh');
+let logEntries = [];
+
+function logDetail(entry) {
+  return Object.entries(entry)
+    .filter(([k]) => !['ts', 'level', 'event'].includes(k))
+    .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`)
+    .join('  ');
+}
+
+const LOG_CATEGORIES = {
+  todo: () => true,
+  archivos: (e) => e.event.startsWith('file.') || e.event === 'task.commit' || e.event === 'task.merge',
+  preguntas: (e) => e.event === 'chat.user' || e.event === 'task.question',
+  respuestas: (e) => e.event === 'chat.reply' || e.event === 'task.answer',
+};
+let logCategory = 'todo';
+
+function renderLogPane() {
+  const needle = logFilter.value.trim().toLowerCase();
+  logList.innerHTML = '';
+  const rows = logEntries.filter((e) => LOG_CATEGORIES[logCategory](e) && (!needle || `${e.event} ${logDetail(e)}`.toLowerCase().includes(needle)));
+  if (!rows.length) {
+    const empty = document.createElement('div');
+    empty.className = 'muted';
+    empty.textContent = logEntries.length ? 'Ningún evento coincide con el filtro.' : 'Todavía no hay eventos registrados en este proyecto.';
+    logList.appendChild(empty);
+    return;
+  }
+  for (const e of rows) {
+    const row = document.createElement('div');
+    row.className = `log-row ${e.level || 'info'}`;
+    const time = document.createElement('span');
+    time.className = 'log-time';
+    time.textContent = new Date(e.ts).toLocaleTimeString('es-ES');
+    const event = document.createElement('span');
+    event.className = 'log-event';
+    event.textContent = e.event;
+    const detail = document.createElement('span');
+    detail.className = 'log-detail';
+    detail.textContent = logDetail(e);
+    row.append(time, event, detail);
+    logList.appendChild(row);
+  }
+}
+
+async function loadLogPane() {
+  logEntries = await fetch('/api/logs?limit=300').then((r) => r.json()).catch(() => []);
+  renderLogPane();
+}
+
+logFilter.addEventListener('input', renderLogPane);
+document.querySelectorAll('#log-chips .log-chip').forEach((chip) => {
+  chip.addEventListener('click', () => {
+    logCategory = chip.dataset.cat;
+    document.querySelectorAll('#log-chips .log-chip').forEach((c) => c.classList.toggle('on', c === chip));
+    renderLogPane();
+  });
+});
+logRefresh.addEventListener('click', loadLogPane);
 
 settingsSave.addEventListener('click', async () => {
   currentSettings.ai.claude.model = claudeModelSelect.value;

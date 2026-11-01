@@ -716,6 +716,22 @@ select, .send-button {
 }
 .path-picker input { flex: 1; min-width: 0; }
 
+.log-toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+#log-refresh { width: auto; height: auto; padding: 6px 12px; flex: none; }
+.log-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.log-chip { font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--panel-border); background: transparent; color: var(--text-dim); cursor: pointer; }
+.log-chip.on { background: var(--accent); color: var(--accent-text); border-color: transparent; }
+.log-toolbar input { flex: 1 1 160px; min-width: 0; font: inherit; font-size: 12.5px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--panel-border); background: var(--bg); color: var(--text); }
+.log-list { margin-top: 10px; display: flex; flex-direction: column; gap: 2px; max-height: 420px; overflow-y: auto; font-family: "SF Mono", Menlo, monospace; font-size: 11.5px; }
+.log-row { display: grid; grid-template-columns: 70px 150px minmax(0, 1fr); gap: 8px; padding: 4px 6px; border-radius: 6px; }
+.log-row > * { min-width: 0; }
+.log-list { max-width: 100%; overflow-x: hidden; }
+.log-row:nth-child(odd) { background: rgba(127, 127, 127, 0.06); }
+.log-time { color: var(--text-dim); }
+.log-event { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-detail { color: var(--text-dim); overflow-wrap: anywhere; }
+.log-row.warn .log-event { color: #ff9f0a; }
+.log-row.error .log-event { color: var(--danger); }
 .task-permission {
   margin-top: 8px;
   padding: 8px;
